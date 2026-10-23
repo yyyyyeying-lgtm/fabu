@@ -1,0 +1,963 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>任务列表 · 发补智能体原型 v18</title>
+<link rel="stylesheet" href="./assets/style.css">
+</head>
+<body>
+<div class="shell">
+  <header class="topbar" id="topbar"></header>
+  <aside class="side" id="side"></aside>
+
+  <main class="content">
+    <div class="page-head">
+      <div>
+        <div class="page-title"><span class="dot"></span>任务列表</div>
+      </div>
+      <div class="right">
+        <button class="btn" id="btnReset">重置筛选</button>
+        <button class="btn primary" id="btnNew">＋ 新建任务</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h3>任务清单</h3>
+        <span class="sub" id="listHint"></span>
+        <div class="right">
+          <span class="tag t-gray">唯一标识：受理号</span>
+          <span class="tag t-gray">演示数据 · 共 <b id="totalNum">0</b> 条</span>
+        </div>
+      </div>
+
+      <div class="panel-body tight">
+        <div class="toolbar">
+          <div class="fld"><span>关键词</span>
+            <input class="inp w-md" id="fKw" placeholder="受理号 / 申请人 / 产品名称"></div>
+          <div class="fld"><span>器械品类</span><select class="sel" id="fDev"></select></div>
+          <div class="fld"><span>申请类型</span><select class="sel" id="fApplyType"></select></div>
+          <div class="fld"><span>产品类别</span><select class="sel" id="fProdClass"></select></div>
+          <div class="fld"><span>状态</span><select class="sel" id="fStatus"></select></div>
+          <button class="btn primary sm" id="btnQuery" style="height:32px">查询</button>
+          <button class="btn sm" id="btnClear" style="height:32px">重置</button>
+        </div>
+      </div>
+
+      <div class="batchbar" id="batchBar">
+        <span class="bn">已选 <b id="bnNum">0</b> 项</span>
+        <span class="sp"></span>
+        <button class="btn sm" id="bnRun">批量开始处理</button>
+        <button class="btn sm" id="bnDel">批量删除</button>
+        <button class="btn sm gh" id="bnClear">清除选择</button>
+      </div>
+
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th class="chkcell"><input type="checkbox" id="chkAll" title="选择本页全部"></th>
+              <th style="width:122px">受理号</th>
+              <th style="width:166px">申请人</th>
+              <th style="width:188px">产品名称</th>
+              <th style="width:158px">器械品类</th>
+              <th style="width:78px">申请类型</th>
+              <th style="width:318px">资料处理进度</th>
+              <th style="width:84px">状态</th>
+              <th style="width:172px">操作</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <div class="pager" id="pager"></div>
+    </div>
+
+    <div class="infobar i-gray" style="margin:0">
+      说明：本页为交互原型，全部数据为演示构造数据。<b>创建任务不依赖资料处理完成</b>，可先建任务、后补资料；
+      进度节点悬浮查看处理详情与失败原因，点节点或「申报材料」进入该案卷的申报材料解析（上传 / 目录扫描 / 归类 / 解析四个 Tab）。
+      <a id="btnClearDemo" style="color:var(--primary);text-decoration:underline;cursor:pointer">清除本机演示数据</a>
+    </div>
+  </main>
+</div>
+
+<div id="toastBox"></div>
+
+<script src="./assets/app.js"></script>
+<script src="./assets/data.js"></script>
+<script src="./assets/cascade.js"></script>
+<script>
+(function () {
+  'use strict';
+  var $ = APP.$, $$ = APP.$$, esc = APP.esc, ic = APP.ic;
+
+  var S = { kw: '', devTop: '', applyType: '', prodClass: '', status: '', page: 1, size: 8 };
+  var RUNNING = {};
+
+  APP.renderTop({ crumb: ['审评工作台', '任务列表'] });
+  APP.renderSide('list');
+
+  function fillSel(sel, arr, allTxt) {
+    var h = '<option value="">' + allTxt + '</option>';
+    arr.forEach(function (v) { h += '<option value="' + esc(v) + '">' + esc(v) + '</option>'; });
+    sel.innerHTML = h;
+  }
+  fillSel($('#fDev'), DATA.DEVICE_CAT.map(function (g) { return g.t; }), '全部品类');
+  fillSel($('#fApplyType'), DATA.ENUM.applyType, '全部申请类型');
+  fillSel($('#fProdClass'), DATA.ENUM.productClass, '全部产品类别');
+  fillSel($('#fStatus'), Object.keys(DATA.STATUS), '全部状态');
+
+  function filtered() {
+    var kw = S.kw.trim().toLowerCase();
+    return DATA.CASES.filter(function (c) {
+      if (S.devTop && (!c.devCat || c.devCat[0] !== S.devTop)) return false;
+      if (S.applyType && c.applyType !== S.applyType) return false;
+      if (S.prodClass && c.productClass !== S.prodClass) return false;
+      if (S.status && c.status !== S.status) return false;
+      if (kw) {
+        var hay = [c.acceptNo, c.product, c.ent, c.applyItem].join(' ').toLowerCase();
+        if (hay.indexOf(kw) < 0) return false;
+      }
+      return true;
+    });
+  }
+
+  /* ---------------- 节点状态 ---------------- */
+  function nodeCls(x) {
+    if (!x) return 'pending';
+    if (x.st === 'fail') return 'fail';
+    if (x.st === 'warn') return 'warn';
+    if (x.st === 'running') return 'run';
+    if (x.st === 'done') return 'done';
+    return 'pending';
+  }
+  function nodeDone(x) { return !!x && (x.st === 'done' || x.st === 'warn'); }
+  function isRunning(c) {
+    return DATA.FLOW_STEPS.some(function (s) {
+      var x = (c.flow || {})[s.k];
+      return x && x.st === 'running';
+    });
+  }
+  function nodeDetail(c, k) {
+    var x = (c.flow || {})[k] || {};
+    if (k === 'upload') {
+      var fn = x.file ? x.file.name + (x.file.count ? ' · ' + x.file.count + ' 个文件' : ' · ' + x.file.size) : '文件夹已上传';
+      if (x.st === 'done') return fn + '，创建后自动扫描目录';
+      if (x.st === 'running') return '正在上传 ' + (x.pct || 0) + '%' + (x.file ? ' · ' + x.file.name : '');
+      return '尚未选择文件夹';
+    }
+    if (k === 'unzip') {
+      if (x.st === 'done') return '读取 ' + (x.files || 128) + ' 个文件' + (x.failN ? '（' + x.failN + ' 个失败，见「申报材料解析 · 目录扫描」）' : '') +
+        ' · ' + (x.dirs || 6) + ' 个一级目录 · 耗时 ' + (x.cost || '3.2s');
+      if (x.st === 'running') return '正在扫描目录 ' + (x.pct || 0) + '%';
+      if (x.st === 'fail') return '目录扫描未完成，后续节点被阻塞';
+      return '等待上传完成';
+    }
+    if (k === 'classify') {
+      if (x.st === 'done') return '128 个 ch 文件 → 12 个 rps 目录（自动 ' + (x.auto != null ? x.auto : 125) + ' · 待确认 ' + (x.low != null ? x.low : 0) + ' · 人工调整 ' + (x.manual || 0) + '）';
+      if (x.st === 'running') return '正在按归类规则处理 ' + (x.pct || 0) + '%';
+      return '等待目录扫描完成';
+    }
+    if (k === 'parse') {
+      if (x.st === 'done') return '解析成功 ' + (x.ok || 128) + ' 个 · 提取文本 ' + (x.pages || 3518) + ' 页';
+      if (x.st === 'fail') return '成功 ' + (x.ok || 125) + ' 个 · 失败 ' + (x.failN || 3) + ' 个 · 提取文本 ' + (x.pages || 3518) + ' 页';
+      if (x.st === 'running') return '正在解析 ' + (x.pct || 0) + '%';
+      return '等待归类完成';
+    }
+    if (k === 'rule') {
+      if (x.st === 'done') return '规则结论 ' + (x.hits || 12) + ' 条 · 比对差异 ' + (x.cmp || 4) + ' 项 · 历史匹配 ' + (x.hist || 12) + ' 份';
+      if (x.st === 'running') return '正在运行规则包 ' + (x.pct || 0) + '%';
+      return '等待解析完成';
+    }
+    return '';
+  }
+  function stateText(x) {
+    if (!x) return '未开始';
+    if (x.st === 'fail') return '失败';
+    if (x.st === 'running') return '处理中 ' + (x.pct || 0) + '%';
+    if (x.st === 'warn') return '部分失败';
+    if (x.st === 'done') return '已完成';
+    return '未开始';
+  }
+
+  function flowCell(c) {
+    var f = DATA.flowOf(c);
+    var nodes = DATA.FLOW_STEPS.map(function (s) {
+      var x = (c.flow || {})[s.k] || { st: 'pending' };
+      var cls = nodeCls(x);
+      var dot = cls === 'done' ? '✓' : (cls === 'fail' || cls === 'warn') ? '!' : '';
+      var attrs = ' data-tip-title="' + esc(s.t) + '"' +
+        ' data-tip-state="' + esc(stateText(x) + (x.at ? ' · ' + x.at : '')) + '"' +
+        ' data-tip-detail="' + esc(nodeDetail(c, s.k)) + '"';
+      if (x.err) attrs += ' data-tip-err="' + esc(x.err + (x.errMore ? '；' + x.errMore : '')) + '"';
+      return '<div class="fnode ' + cls + '"' + attrs + '>' +
+        '<span class="fdot">' + dot + '</span>' +
+        '<span class="flab">' + esc(s.short) + '</span></div>';
+    }).join('');
+
+    var cap, tone;
+    if (f.fail) { cap = '第' + f.fail.i + '步 ' + f.fail.t + '失败'; tone = 'red'; }
+    else if (isRunning(c)) {
+      var curNode = null;
+      DATA.FLOW_STEPS.forEach(function (s) {
+        var x = (c.flow || {})[s.k];
+        if (!curNode && x && x.st === 'running') curNode = { t: s.t, pct: x.pct || 0, i: DATA.FLOW_STEPS.indexOf(s) + 1 };
+      });
+      cap = curNode ? ('第' + curNode.i + '步 ' + curNode.t + ' · ' + curNode.pct + '%') : '处理中';
+      tone = 'blue';
+    } else if (f.warn) {
+      cap = '有环节存在失败文件 · 点开排查';
+      tone = 'amber';
+    } else if (!f.done && f.cur) {
+      cap = '待处理 · 下一步 ' + f.cur.t;
+      tone = 'gray';
+    } else if (f.done) {
+      cap = '全部节点已完成';
+      tone = 'green';
+    } else {
+      cap = '未开始';
+      tone = 'gray';
+    }
+
+    return '<div class="flowcell" id="flow-' + esc(c.acceptNo) + '">' +
+      '<div class="fprog">' + nodes + '</div>' +
+      '<div class="fcap ' + tone + '">' + esc(cap) + '</div></div>';
+  }
+
+  /* ---------------- 表格 ---------------- */
+  var STATUS_ORDER = { '待复核': 0, '待处理': 1, '待同步': 2, '已同步': 3 };
+
+  function devName(c) {
+    if (!c.devCat || !c.devCat.length) return c.cat || '—';
+    return c.devCat[2].replace(/^[\d\-]+\s+/, '');
+  }
+  function devParent(c) {
+    if (!c.devCat || c.devCat.length < 2) return '';
+    return c.devCat[1].replace(/^[\d\-]+\s+/, '');
+  }
+
+  var SEL = {};
+  function selCount() { return Object.keys(SEL).length; }
+  function syncBatch() {
+    var n = selCount();
+    var bar = $('#batchBar');
+    if (bar) bar.classList.toggle('on', n > 0);
+    var num = $('#bnNum'); if (num) num.textContent = n;
+    var rows = $$('#rows .rowchk');
+    var all = rows.length > 0 && rows.every(function (x) { return x.checked; });
+    var some = rows.some(function (x) { return x.checked; });
+    var ca = $('#chkAll');
+    if (ca) { ca.checked = all; ca.indeterminate = !all && some; }
+  }
+  function selClear() {
+    SEL = {};
+    $$('#rows .rowchk').forEach(function (x) { x.checked = false; });
+    $$('#rows tr.sel').forEach(function (tr) { tr.classList.remove('sel'); });
+    syncBatch();
+  }
+
+  function renderTable() {
+    var list = filtered().slice();
+    list.sort(function (a, b) {
+      if (a.isNew && !b.isNew) return -1;
+      if (!a.isNew && b.isNew) return 1;
+      var d = (STATUS_ORDER[a.status] == null ? 9 : STATUS_ORDER[a.status]) - (STATUS_ORDER[b.status] == null ? 9 : STATUS_ORDER[b.status]);
+      return d !== 0 ? d : (a.updated < b.updated ? 1 : -1);
+    });
+    var total = list.length;
+    var pages = Math.max(1, Math.ceil(total / S.size));
+    if (S.page > pages) S.page = pages;
+    var pageList = list.slice((S.page - 1) * S.size, (S.page - 1) * S.size + S.size);
+
+    var tb = $('#rows');
+    if (!total) {
+      tb.innerHTML = '<tr><td colspan="9"><div class="empty">' +
+        '<div class="eic">' + ic('search', 20) + '</div>' +
+        '<div class="et">没有符合条件的任务</div>' +
+        '<div class="es">可尝试放宽筛选条件，或新建一个任务</div>' +
+        '<div class="eact"><button class="btn sm" id="emptyClear">重置筛选</button>' +
+        '<button class="btn primary sm" id="emptyNew">＋ 新建任务</button></div>' +
+        '</div></td></tr>';
+      $('#emptyClear').onclick = doClear;
+      $('#emptyNew').onclick = openNew;
+    } else {
+      var h = '';
+      pageList.forEach(function (c) {
+        var st = DATA.STATUS[c.status] || { tone: 'b-gray' };
+        var parseNode = (c.flow || {}).parse || {};
+        /* 解析即使有少量文件失败，只要成功解析过文件，比对智能体仍可基于成功文件运行 */
+        var parseOk = nodeDone(parseNode) || (parseNode.st === 'fail' && (parseNode.ok || 0) > 0);
+        var ruleOk = nodeDone((c.flow || {}).rule);
+        var f = DATA.flowOf(c);
+        var running = isRunning(c);
+        var cmpOff = parseOk ? '' : ' off';
+        var draftOff = ruleOk ? '' : ' off';
+        var runLink = (running || f.done) ? '' :
+          '<a data-act="run">' + (f.pct ? '继续处理' : '开始处理') + '</a>';
+
+        h += '<tr data-no="' + esc(c.acceptNo) + '"' + (SEL[c.acceptNo] ? ' class="sel"' : '') + '>' +
+          '<td class="chkcell"><input type="checkbox" class="rowchk" data-no="' + esc(c.acceptNo) + '"' +
+            (SEL[c.acceptNo] ? ' checked' : '') + '></td>' +
+          '<td class="mono"><span class="acceptlink" data-act="parse" title="查看该案卷的申报材料解析">' + esc(c.acceptNo) + '</span>' +
+            (c.isNew ? '<div class="t2" style="color:var(--green)">新建</div>' : '') + '</td>' +
+          '<td><div class="t1" style="font-weight:400">' + esc(c.ent) + '</div><div class="t2">' +
+            esc((c.productClass || '—') + ' · ' + (c.region || '—')) + '</div></td>' +
+          '<td><div class="t1">' + esc(c.product) + '</div><div class="t2">' + esc(c.applyItem || c.cat) + '</div></td>' +
+          '<td><div class="t1" style="font-weight:400">' + esc(devName(c)) + '</div><div class="t2">' + esc(devParent(c)) + '</div></td>' +
+          '<td class="nowrap"><span class="tag">' + esc(c.applyType || c.regType) + '</span></td>' +
+          '<td>' + flowCell(c) + '</td>' +
+          '<td><span class="badge ' + st.tone + '"><span class="bd"></span>' + esc(c.status) + '</span></td>' +
+          '<td><div class="opcell">' +
+            '<div class="opbtns">' +
+              '<button class="btn xs' + cmpOff + '" data-act="cmp"' +
+                (cmpOff ? ' title="资料解析完成后可用"' : '') + '>比对智能体</button>' +
+              '<button class="btn xs primary' + draftOff + '" data-act="draft"' +
+                (draftOff ? ' title="规则运行完成后可用"' : '') + '>发补智能体</button>' +
+            '</div>' +
+            '<div class="cell-ops">' +
+              runLink +
+              '<a data-act="parse" class="mute">申报材料</a>' +
+              '<a data-act="del" class="mute">删除</a>' +
+            '</div>' +
+          '</div></td>' +
+        '</tr>';
+      });
+      tb.innerHTML = h;
+    }
+
+    $('#totalNum').textContent = total;
+    $('#listHint').textContent = total ? ('当前筛选命中 ' + total + ' 条') : '';
+    APP.renderPager($('#pager'), total, S.page, S.size, function (p) { S.page = p; renderTable(); });
+    syncBatch();
+  }
+
+  /* ---------------- 行内处理（不跳页） ---------------- */
+  function findCase(no) {
+    return DATA.CASES.filter(function (x) { return x.acceptNo === no; })[0];
+  }
+  function nowStr() {
+    var d = new Date();
+    function p(n) { return n < 10 ? '0' + n : '' + n; }
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+  function hm() {
+    var d = new Date();
+    return (d.getHours() < 10 ? '0' : '') + d.getHours() + ':' + (d.getMinutes() < 10 ? '0' : '') + d.getMinutes();
+  }
+  function fillMeta(k, x) {
+    if (k === 'upload') {
+      if (!x.file) x.file = { name: '企业申报资料', size: '42.8 MB', count: 128, dirs: 6 };
+    } else if (k === 'unzip') {
+      x.files = 128; x.dirs = 6; x.cost = '3.2s';
+    } else if (k === 'classify') {
+      x.auto = 125; x.low = 3; x.manual = 0;
+    } else if (k === 'parse') {
+      x.ok = 128; x.failN = 0; x.pages = 3518;
+    } else if (k === 'rule') {
+      x.hits = 12; x.cmp = 4; x.hist = 12;
+    }
+  }
+
+  function runTask(no) {
+    var c = findCase(no);
+    if (!c || RUNNING[no]) return;
+    var order = DATA.FLOW_STEPS.map(function (s) { return s.k; });
+    var startIdx = 0;
+    while (startIdx < order.length && nodeDone(c.flow[order[startIdx]])) startIdx++;
+    if (startIdx >= order.length) return;
+
+    RUNNING[no] = true;
+    if (order[startIdx] === 'upload' && !(c.flow.upload && c.flow.upload.file)) {
+      c.flow.upload = c.flow.upload || {};
+      c.flow.upload.file = { name: '企业申报资料_' + no, size: '42.8 MB', count: 128, dirs: 6 };
+    }
+    renderTable();
+
+    (function step(i) {
+      if (i >= order.length) {
+        RUNNING[no] = false;
+        c.status = '待复核';
+        c.updated = nowStr();
+        DATA.saveFlow(no, c.flow);
+        if (c.isNew) DATA.saveCase(c);
+        renderTable();
+        APP.toast('受理号 ' + no + ' 的资料处理已完成，可进入发补智能体', 'ok', 3200);
+        return;
+      }
+      var k = order[i];
+      if (nodeDone(c.flow[k])) { step(i + 1); return; }
+
+      var x = c.flow[k] || (c.flow[k] = { st: 'pending', pct: 0 });
+      var base = (x.st === 'fail') ? 0 : (x.pct || 0);
+      x.st = 'running';
+      x.pct = base;
+      delete x.err;
+      delete x.errMore;
+      renderTable();
+
+      var t0 = Date.now();
+      var dur = 760;
+      var timer = setInterval(function () {
+        var p = Math.min(100, Math.round(base + (Date.now() - t0) / dur * (100 - base)));
+        x.pct = p;
+        var el = $('#flow-' + no);
+        if (el) el.outerHTML = flowCell(c);
+        if (p >= 100) {
+          clearInterval(timer);
+          x.st = 'done';
+          x.pct = 100;
+          x.at = hm();
+          fillMeta(k, x);
+          DATA.saveFlow(no, c.flow);
+          if (c.isNew) DATA.saveCase(c);
+          renderTable();
+          setTimeout(function () { step(i + 1); }, 240);
+        }
+      }, 90);
+    })(startIdx);
+  }
+
+  /* ---------------- 行操作 ---------------- */
+  $('#rows').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-act]');
+    if (!b) return;
+    var tr = b.closest('tr');
+    var no = tr.dataset.no;
+    var c = findCase(no);
+    if (!c) return;
+    var act = b.dataset.act;
+
+    if (act === 'parse') { location.href = './09-申报材料解析.html?case=' + encodeURIComponent(no); return; }
+    if (act === 'cmp') {
+      /* 不弹窗：解析完成后直接进入比对结果页；未完成时静默不响应 */
+      if (b.classList.contains('off')) { APP.toast('资料解析完成后才能进入比对智能体', 'warn', 2600); return; }
+      location.href = './07-比对智能体.html?case=' + encodeURIComponent(no);
+      return;
+    }
+    if (act === 'draft') {
+      if (b.classList.contains('off')) { APP.toast('规则运行完成后才能进入发补智能体', 'warn', 2600); return; }
+      location.href = './08-发补智能体.html?case=' + encodeURIComponent(no) + '&tab=rules';
+      return;
+    }
+    if (act === 'run') { runTask(no); return; }
+    if (act === 'del') { confirmDel(c); }
+  });
+
+  /* 勾选 */
+  $('#rows').addEventListener('change', function (e) {
+    var cb = e.target.closest('.rowchk');
+    if (!cb) return;
+    var no = cb.dataset.no;
+    if (cb.checked) SEL[no] = true; else delete SEL[no];
+    var tr = cb.closest('tr');
+    if (tr) tr.classList.toggle('sel', cb.checked);
+    syncBatch();
+  });
+  var ca = $('#chkAll');
+  if (ca) ca.addEventListener('change', function () {
+    var on = this.checked;
+    $$('#rows .rowchk').forEach(function (cb) {
+      cb.checked = on;
+      var no = cb.dataset.no;
+      if (on) SEL[no] = true; else delete SEL[no];
+      var tr = cb.closest('tr'); if (tr) tr.classList.toggle('sel', on);
+    });
+    syncBatch();
+  });
+  $('#bnClear').onclick = selClear;
+  $('#bnRun').onclick = function () {
+    var nos = Object.keys(SEL).filter(function (no) {
+      var c = findCase(no); return c && !DATA.flowOf(c).done;
+    });
+    if (!nos.length) { APP.toast('所选任务的处理节点都已完成，无需再处理', 'warn', 2400); return; }
+    nos.forEach(function (no) { runTask(no); });
+    APP.toast('已开始处理 ' + nos.length + ' 个任务', 'ok', 2400);
+    selClear();
+  };
+  $('#bnDel').onclick = function () {
+    var nos = Object.keys(SEL);
+    if (!nos.length) return;
+    APP.confirmDialog({
+      title: '批量删除任务', tone: 'red', okText: '删除 ' + nos.length + ' 个任务',
+      body: '将删除 <b>' + nos.length + '</b> 个任务：' + nos.map(esc).join('、') + '。<br>' +
+        '对应的申报资料处理进度与发补意见草稿将一并移除，且不可恢复。'
+    }, function () {
+      nos.forEach(function (no) { DATA.removeCase(no); delete SEL[no]; });
+      render();
+      APP.toast('已删除 ' + nos.length + ' 个任务', 'ok');
+    });
+  };
+
+  function confirmDel(c) {
+    APP.confirmDialog({
+      title: '删除任务',
+      tone: 'red',
+      okText: '确认删除',
+      body: '将删除受理号 <b>' + esc(c.acceptNo) + '</b>（' + esc(c.product) + ' · ' + esc(c.ent) + '）。<br>' +
+        '该任务的申报资料处理进度、发补意见草稿将一并移除，且不可恢复。' +
+        (c.status === '已同步' ? '<br><b>注意：该任务已同步至审评系统，删除后不影响审评系统中已有的数据。</b>' : '')
+    }, function () {
+      DATA.removeCase(c.acceptNo);
+      delete SEL[c.acceptNo];
+      render();
+      APP.toast('受理号 ' + c.acceptNo + ' 的任务已删除', 'ok');
+    });
+  }
+
+  /* ---------------- 查询 / 重置 ---------------- */
+  function doQuery() {
+    S.kw = $('#fKw').value; S.devTop = $('#fDev').value; S.applyType = $('#fApplyType').value;
+    S.prodClass = $('#fProdClass').value; S.status = $('#fStatus').value; S.page = 1;
+    render();
+    APP.toast('已按条件筛选，命中 ' + filtered().length + ' 条', 'ok', 1600);
+  }
+  function doClear() {
+    S = { kw: '', devTop: '', applyType: '', prodClass: '', status: '', page: 1, size: 8 };
+    $('#fKw').value = ''; $('#fDev').value = ''; $('#fApplyType').value = '';
+    $('#fProdClass').value = ''; $('#fStatus').value = '';
+    render();
+  }
+  $('#btnQuery').onclick = doQuery;
+  $('#btnClear').onclick = doClear;
+  $('#btnReset').onclick = doClear;
+  $('#btnClearDemo').onclick = function () {
+    APP.confirmDialog({
+      title: '清除本机演示数据', tone: 'amber', okText: '清除并刷新',
+      body: '将清除在本机新建的任务及其处理进度（浏览器 localStorage），<br>原型内置的演示案卷不受影响。'
+    }, function () { DATA.clearDemo(); location.reload(); });
+  };
+  $('#fKw').addEventListener('keydown', function (e) { if (e.key === 'Enter') doQuery(); });
+
+  /* ---------------- 节点悬浮详情 ---------------- */
+  var tip = document.createElement('div');
+  tip.className = 'nodetip';
+  tip.id = 'nodeTip';
+  document.body.appendChild(tip);
+
+  function hideTip() { tip.style.display = 'none'; }
+  document.addEventListener('mouseover', function (e) {
+    var n = e.target.closest ? e.target.closest('.fnode') : null;
+    if (!n) return;
+    var t = n.dataset.tipTitle || '';
+    var s = n.dataset.tipState || '';
+    var d = n.dataset.tipDetail || '';
+    var err = n.dataset.tipErr || '';
+    tip.innerHTML = '<b>' + esc(t) + '</b>' +
+      '<span class="nts">' + esc(s) + '</span>' +
+      (err ? '<span class="nte">' + esc(err) + '</span>' : '') +
+      (d ? '<span class="ntd">' + esc(d) + '</span>' : '');
+    tip.style.display = 'block';
+    var r = n.getBoundingClientRect();
+    var w = tip.offsetWidth, h = tip.offsetHeight;
+    var left = Math.min(window.innerWidth - w - 12, Math.max(10, r.left + r.width / 2 - w / 2));
+    var top = r.top - h - 9;
+    var below = false;
+    if (top < 8) { top = r.bottom + 9; below = true; }
+    tip.style.left = left + 'px';
+    tip.style.top = top + 'px';
+    tip.classList.toggle('below', below);
+  });
+  document.addEventListener('mouseout', function (e) {
+    var n = e.target.closest ? e.target.closest('.fnode') : null;
+    if (n && !n.contains(e.relatedTarget)) hideTip();
+  });
+  /* 点进度节点：直接进该案卷的申报材料解析，并落在对应 Tab */
+  document.addEventListener('click', function (e) {
+    var n = e.target.closest ? e.target.closest('.fnode') : null;
+    if (!n) return;
+    var tr = n.closest('tr');
+    if (!tr || !tr.dataset.no) return;
+    var idx = Array.prototype.indexOf.call(n.parentNode.children, n);
+    var step = DATA.FLOW_STEPS[idx];
+    location.href = './09-申报材料解析.html?case=' + encodeURIComponent(tr.dataset.no) +
+      (step ? '&stage=' + encodeURIComponent(step.k) : '');
+  });
+  window.addEventListener('scroll', hideTip, true);
+
+  /* ======================================================================
+     新建任务：受理号必填 + 7 项基础字段；直接上传申报资料文件夹（无需压缩）
+     ====================================================================== */
+  var NW = null;
+
+  function fmtSize(b) {
+    if (!b) return '—';
+    if (b >= 1073741824) return (b / 1073741824).toFixed(1) + ' GB';
+    if (b >= 1048576) return (b / 1048576).toFixed(1) + ' MB';
+    return Math.max(1, Math.round(b / 1024)) + ' KB';
+  }
+  function regTypeOf(t) { return t === '注册' ? '首次注册' : (t === '延续' ? '延续注册' : '变更注册'); }
+
+  function openNew() {
+    NW = { devCat: [], prodClass: '', region: '', file: null, pct: 0, timer: null, data: null, mask: null };
+
+    var body =
+      '<div id="newErr" style="display:none;margin-bottom:13px"></div>' +
+      '<div class="fg2">' +
+        '<div class="fi"><label>受理号 <span class="req">*</span></label>' +
+          '<input class="inp" id="nAccept" placeholder="如：CQX2600455" autocomplete="off" style="font-family:var(--mono)">' +
+          '<div class="fhint">唯一标识，全系统不重复；创建后不可修改</div></div>' +
+        '<div class="fi"><label>申请人 <span class="req">*</span></label>' +
+          '<input class="inp" id="nApplicant" placeholder="如：华东医疗器械有限公司" autocomplete="off" style="margin-bottom:0"></div>' +
+        '<div class="fi"><label>产品名称 <span class="req">*</span></label>' +
+          '<input class="inp" id="nProduct" placeholder="如：一次性使用输液器" autocomplete="off"></div>' +
+        '<div class="fi"><label>申请类型 <span class="req">*</span></label>' +
+          '<select class="sel" id="nApplyType"><option value="">请选择</option>' +
+            DATA.ENUM.applyType.map(function (v) { return '<option>' + esc(v) + '</option>'; }).join('') +
+          '</select></div>' +
+        '<div class="fi span2"><label>器械品类 <span class="req">*</span><span class="k">四级联动 · 支持模糊搜索，需选到第四级</span></label>' +
+          '<div id="nDevCat"></div></div>' +
+        '<div class="fi"><label>申请事项 <span class="req">*</span></label>' +
+          '<select class="sel" id="nApplyItem"><option value="">请选择</option>' +
+            DATA.ENUM.applyItem.map(function (v) { return '<option>' + esc(v) + '</option>'; }).join('') +
+          '</select></div>' +
+        '<div class="fi"><label>产品类别 <span class="req">*</span></label>' +
+          '<div class="vchips" id="nProdClass">' +
+            DATA.ENUM.productClass.map(function (v) { return '<span class="vchip" data-v="' + esc(v) + '">' + esc(v) + '</span>'; }).join('') +
+          '</div></div>' +
+        '<div class="fi"><label>地域 <span class="req">*</span></label>' +
+          '<div class="vchips" id="nRegion">' +
+            DATA.ENUM.region.map(function (v) { return '<span class="vchip" data-v="' + esc(v) + '">' + esc(v) + '</span>'; }).join('') +
+          '</div></div>' +
+      '</div>' +
+
+      '<div class="nwsec"><span class="nwsec-h">申报资料文件夹 <span class="req">*</span></span>' +
+        '<span class="nwsec-s">直接上传整个文件夹，无需压缩 → 自动扫描目录 → 按 ch 归类 → 解析 → 跑规则</span></div>' +
+      '<div class="upz" id="upZone">' +
+        '<div class="upz-ic">' + ic('arrowUp', 20) + '</div>' +
+        '<div class="upz-t">将企业申报资料<b>文件夹</b>拖到此处，或 <button type="button" class="linkbtn" id="upPick">选择本地文件夹</button></div>' +
+        '<div class="upz-s">保留原有目录结构（含子目录），单个案卷文件夹 ≤ 2GB，无需打包成压缩包</div>' +
+        '<input type="file" id="upFile" webkitdirectory directory multiple style="display:none">' +
+      '</div>' +
+      '<div class="upcard" id="upFileCard" style="display:none"></div>' +
+      '<div class="uphint" id="upHintRow">没有现成文件夹？<button type="button" class="linkbtn" id="upDemo">使用演示文件夹（128 个文件 · 6 个一级目录 · 42.8 MB）</button></div>' +
+      '<div class="infobar i-blue" style="margin:12px 0 0">' + ic('info', 15, 'ib-ic') +
+        '<div>字段与文件夹都要填/选，点「创建任务」后直接进列表并开始处理；文件夹内的层级会原样保留。</div></div>';
+
+    APP.openModal({
+      title: '新建发补任务', width: 'w860', body: body,
+      foot: '<span class="tip">带 <span style="color:var(--red)">*</span> 为必填项 · 受理号唯一 · 申报资料文件夹必选</span><span class="sp"></span>' +
+        '<button class="btn" data-close="1">取消</button>' +
+        '<button class="btn primary" id="nCreate">创建任务</button>',
+      after: function (m) {
+        NW.mask = m;
+        initStep1(m);
+        initUpload(m);
+        $('#nCreate', m).onclick = function () { createTask(m); };
+        setTimeout(function () { var f = $('#nAccept', m); if (f) f.focus(); }, 60);
+      }
+    });
+  }
+
+  function initStep1(m) {
+    CASCADE.create($('#nDevCat', m), {
+      tree: DATA.DEVICE_CAT,
+      levels: 4,
+      placeholder: '如输入“输液器”“体温计”搜索，或逐级选择',
+      onChange: function (path) {
+        NW.devCat = path.filter(Boolean);
+        var el = $('#nDevCat', m);
+        if (el) el.classList.remove('bad');
+      }
+    });
+
+    function chipGroup(sel, key) {
+      var box = $(sel, m);
+      box.addEventListener('click', function (e) {
+        var c = e.target.closest('.vchip');
+        if (!c) return;
+        NW[key] = (NW[key] === c.dataset.v) ? '' : c.dataset.v;
+        $$('.vchip', box).forEach(function (x) { x.classList.toggle('on', x.dataset.v === NW[key]); });
+      });
+    }
+    chipGroup('#nProdClass', 'prodClass');
+    chipGroup('#nRegion', 'region');
+
+    ['nAccept', 'nApplicant', 'nProduct'].forEach(function (id) {
+      var el = $('#' + id, m);
+      el.addEventListener('input', function () { el.classList.remove('bad'); });
+    });
+    ['nApplyType', 'nApplyItem'].forEach(function (id) {
+      var el = $('#' + id, m);
+      el.addEventListener('change', function () { el.classList.remove('bad'); });
+    });
+  }
+
+  function showErr(m, errs) {
+    var eb = $('#newErr', m);
+    eb.style.display = '';
+    eb.innerHTML = '<div class="infobar i-amber" style="margin:0">' + ic('warn', 15, 'ib-ic') +
+      '<div>' + errs.map(esc).join('<br>') + '</div></div>';
+    var bd = m.querySelector('.modal-bd');
+    if (bd) bd.scrollTop = 0;
+  }
+
+  function validate(m) {
+    var accept = $('#nAccept', m).value.trim();
+    var applicant = $('#nApplicant', m).value.trim();
+    var product = $('#nProduct', m).value.trim();
+    var applyType = $('#nApplyType', m).value;
+    var applyItem = $('#nApplyItem', m).value;
+    var errs = [];
+
+    function mark(id, bad) { var e = $('#' + id, m); if (e) e.classList.toggle('bad', !!bad); }
+    mark('nAccept', !accept); mark('nApplicant', !applicant); mark('nProduct', !product);
+    mark('nApplyType', !applyType); mark('nApplyItem', !applyItem);
+
+    if (!accept) errs.push('请填写「受理号」');
+    if (!applicant) errs.push('请填写「申请人」');
+    if (!product) errs.push('请填写「产品名称」');
+    if (!NW.devCat || NW.devCat.length < 4) {
+      errs.push('请选择完整的「器械品类」（需逐级选到第四级）');
+      var dc = $('#nDevCat', m); if (dc) dc.classList.add('bad');
+    }
+    if (!applyType) errs.push('请选择「申请类型」');
+    if (!applyItem) errs.push('请选择「申请事项」');
+    if (!NW.prodClass) errs.push('请选择「产品类别」');
+    if (!NW.region) errs.push('请选择「地域」');
+
+    if (accept) {
+      var dup = DATA.CASES.some(function (c) { return c.acceptNo.toLowerCase() === accept.toLowerCase(); });
+      if (dup) {
+        errs.push('受理号「' + accept + '」已存在（受理号是唯一标识），请勿重复创建');
+        mark('nAccept', true);
+      }
+    }
+
+    if (!NW.file) {
+      errs.push('请选择企业申报资料文件夹（未选择不能创建任务）');
+      var uz = $('#upZone', m);
+      if (uz) { uz.classList.add('bad'); uz.scrollIntoView({ block: 'center' }); }
+    }
+
+    if (errs.length) { showErr(m, errs); return false; }
+
+    var eb = $('#newErr', m);
+    eb.style.display = 'none';
+    var dc2 = $('#nDevCat', m); if (dc2) dc2.classList.remove('bad');
+    NW.data = { accept: accept, applicant: applicant, product: product, applyType: applyType, applyItem: applyItem };
+    return true;
+  }
+
+  /* ---------- 上传模拟 ---------- */
+  function initUpload(m) {
+    var file = $('#upFile', m);
+    var zone = $('#upZone', m);
+
+    $('#upPick', m).onclick = function (e) { e.stopPropagation(); file.value = ''; file.click(); };
+    zone.onclick = function (e) { if (!e.target.closest('button')) { file.value = ''; file.click(); } };
+    file.onchange = function () { if (file.files && file.files.length) useDirFromFiles(file.files); };
+    $('#upDemo', m).onclick = function () {
+      useDir('企业申报资料（演示）', 42.8 * 1048576, 128, 6);
+    };
+
+    ['dragenter', 'dragover'].forEach(function (ev) {
+      zone.addEventListener(ev, function (e) { e.preventDefault(); zone.classList.add('over'); });
+    });
+    ['dragleave', 'drop'].forEach(function (ev) {
+      zone.addEventListener(ev, function (e) { e.preventDefault(); zone.classList.remove('over'); });
+    });
+    zone.addEventListener('drop', function (e) {
+      var dt = e.dataTransfer;
+      var it = dt && dt.items && dt.items[0];
+      var entry = it && it.webkitGetAsEntry ? it.webkitGetAsEntry() : null;
+      /* 1) 拖进来的是文件夹：递归数文件、算体积 */
+      if (entry && entry.isDirectory) {
+        walkDir(entry, function (st) { useDir(entry.name, st.size, st.n, st.dirs); });
+        return;
+      }
+      /* 2) 拖进来的是单个文件：提示改为拖文件夹 */
+      if (dt && dt.files && dt.files.length) {
+        APP.toast('请拖入整个申报资料文件夹，而不是单个文件', 'warn', 2800);
+      }
+    });
+    $('#upFileCard', m).addEventListener('click', function (e) {
+      if (e.target.closest('#upChange')) { file.value = ''; file.click(); }
+    });
+  }
+
+  /* 通过 <input webkitdirectory> 选中的一批文件 → 文件夹信息 */
+  function useDirFromFiles(files) {
+    if (!files || !files.length) return;
+    var size = 0, i, top = {};
+    for (i = 0; i < files.length; i++) size += files[i].size || 0;
+    var rel = files[0].webkitRelativePath || '';
+    var name = rel.indexOf('/') > 0 ? rel.split('/')[0] : '企业申报资料';
+    for (i = 0; i < files.length; i++) {
+      var r = files[i].webkitRelativePath || '';
+      var seg = r.split('/');
+      if (seg.length > 2) top[seg[1]] = 1;
+    }
+    useDir(name, size, files.length, Object.keys(top).length || 1);
+  }
+
+  /* 拖入文件夹时的递归统计（返回文件数 / 总体积 / 一级目录数） */
+  function walkDir(root, cb) {
+    var st = { n: 0, size: 0, dirs: 0 }, pending = 1, done = false;
+    function tick() {
+      if (--pending === 0 && !done) { done = true; cb(st); }
+    }
+    function visit(entry, depth) {
+      if (entry.isFile) {
+        entry.file(function (f) { st.n++; st.size += f.size || 0; tick(); },
+          function () { tick(); });
+        return;
+      }
+      if (depth === 1) st.dirs++;
+      var reader = entry.createReader();
+      (function readAll() {
+        reader.readEntries(function (ents) {
+          if (!ents.length) { tick(); return; }
+          ents.forEach(function (e) { pending++; visit(e, depth + 1); });
+          readAll();
+        }, function () { tick(); });
+      })();
+    }
+    visit(root, 0);
+  }
+
+  function useDir(name, size, count, dirs) {
+    var m = NW.mask;
+    if (!m) return;
+    NW.file = {
+      name: name || '企业申报资料',
+      size: fmtSize(size || 0),
+      count: count || 0,
+      dirs: dirs || 0,
+      bytes: size || 0
+    };
+    NW.pct = 0;
+    $('#upZone', m).style.display = 'none';
+    var hint = $('#upHintRow', m);
+    if (hint) hint.style.display = 'none';
+    var card = $('#upFileCard', m);
+    card.style.display = '';
+    card.innerHTML =
+      '<div class="upcard-h">' +
+        '<span class="fic" style="font-size:9.5px;font-weight:600">DIR</span>' +
+        '<div class="fn"><b>' + esc(NW.file.name) + '</b>' +
+          '<span>文件夹 · ' + NW.file.count + ' 个文件' + (NW.file.dirs ? ' · ' + NW.file.dirs + ' 个一级目录' : '') +
+          ' · ' + esc(NW.file.size) + ' · 创建任务后自动扫描目录</span></div>' +
+        '<button type="button" class="linkbtn" id="upChange" style="font-size:12px;flex:0 0 auto">更换文件夹</button>' +
+        '<span class="fs" id="upPct">0%</span>' +
+      '</div>' +
+      '<div class="pbar"><i id="upBar" class="run" style="width:0%"></i></div>' +
+      '<div class="uphint" id="upNote">正在读取文件夹结构并上传…</div>';
+    startUpload();
+  }
+
+  function startUpload() {
+    stopUpload();
+    var step = 0, total = 20;
+    NW.timer = setInterval(function () {
+      if (!NW.mask || !document.body.contains(NW.mask)) { stopUpload(); return; }
+      step++;
+      var p = Math.min(100, Math.round(step / total * 100));
+      NW.pct = p;
+      var bar = $('#upBar'), pct = $('#upPct');
+      if (bar) bar.style.width = p + '%';
+      if (pct) pct.textContent = p + '%';
+      if (p >= 100) {
+        stopUpload();
+        if (bar) bar.className = 'ok';
+        var note = $('#upNote');
+        if (note) note.innerHTML = '<span style="color:var(--green)">上传完成</span> · ' +
+          esc(NW.file.count + ' 个文件 / ' + NW.file.size) + '，创建任务后自动扫描目录并归类';
+      }
+    }, 85);
+  }
+  function stopUpload() {
+    if (NW && NW.timer) { clearInterval(NW.timer); NW.timer = null; }
+  }
+
+  /* ---------- 创建 ---------- */
+  function createTask(m) {
+    var start = true;
+    if (!validate(m)) return;
+    var no = NW.data.accept;
+    var now = nowStr();
+    var cat = /^14/.test(NW.devCat[0]) ? '无源医疗器械'
+      : (/^22/.test(NW.devCat[0]) ? '体外诊断试剂' : '有源医疗器械');
+
+    var c = {
+      acceptNo: no,
+      product: NW.data.product,
+      ent: NW.data.applicant,
+      cat: cat,
+      devCat: NW.devCat.slice(),
+      applyType: NW.data.applyType,
+      applyItem: NW.data.applyItem,
+      productClass: NW.prodClass,
+      region: NW.region,
+      regType: regTypeOf(NW.data.applyType),
+      reviewer: '叶颖',
+      created: now, updated: now,
+      status: '待处理',
+      problems: 0, pending: 0, rule: 0, cmp: 0, hist: 0,
+      flow: DATA.mkFlow(0),
+      isNew: true
+    };
+
+    if (NW.file) {
+      var done = NW.pct >= 100;
+      c.flow.upload = {
+        st: done ? 'done' : 'running', pct: done ? 100 : NW.pct,
+        at: done ? now : '',
+        file: { name: NW.file.name, size: NW.file.size, count: NW.file.count || 0, dirs: NW.file.dirs || 0 }
+      };
+    }
+    if (start && !NW.file) {
+      c.flow.upload = { st: 'pending', pct: 0, file: { name: '企业申报资料_' + no, size: '42.8 MB', count: 128, dirs: 6 } };
+    }
+
+    DATA.saveCase(c);
+    stopUpload();
+    APP.closeModal();
+
+    S = { kw: '', devTop: '', applyType: '', prodClass: '', status: '', page: 1, size: 8 };
+    $('#fKw').value = ''; $('#fDev').value = ''; $('#fApplyType').value = '';
+    $('#fProdClass').value = ''; $('#fStatus').value = '';
+    renderTable();
+
+    var tr = $('#rows tr[data-no="' + no + '"]');
+    if (tr) { tr.classList.add('hl'); tr.scrollIntoView({ block: 'center' }); }
+
+    if (start) {
+      APP.toast('任务 ' + no + ' 已创建，开始在列表内逐节点处理…', 'ok', 2200);
+      setTimeout(function () { runTask(no); }, 450);
+    } else {
+      APP.toast('任务 ' + no + ' 已创建，可在列表中点「开始处理」继续', 'ok', 3200);
+    }
+  }
+  $('#btnNew').onclick = openNew;
+
+  function render() { renderTable(); }
+
+  /* ---------- 承接草稿页「一键同步」回传（按受理号） ---------- */
+  (function handleSyncBack() {
+    var m = /[?&]sync=([^&]+)/.exec(location.search);
+    if (!m) return;
+    var no = decodeURIComponent(m[1]);
+    var c = findCase(no);
+    renderTable();
+    if (!c) return;
+    c.status = '已同步';
+    c.pending = 0;
+    c.updated = nowStr();
+    if (c.isNew) DATA.saveCase(c); else DATA.saveFlow(c.acceptNo, c.flow);
+    renderTable();
+    var tr = $('#rows tr[data-no="' + no + '"]');
+    if (tr) { tr.classList.add('hl'); tr.scrollIntoView({ block: 'center' }); }
+    setTimeout(function () {
+      APP.toast('受理号 ' + no + ' 的发补意见草稿已同步至审评系统', 'ok', 3800);
+    }, 300);
+  })();
+
+  renderTable();
+
+  /* 调试/自动化入口 */
+  window.__TL = { S: S, NW: function () { return NW; }, findCase: findCase, renderTable: renderTable };
+})();
+</script>
+</body>
+</html>

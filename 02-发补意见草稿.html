@@ -1,0 +1,1543 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>发补意见草稿 · 发补智能体原型 v2</title>
+<link rel="stylesheet" href="./assets/style.css">
+</head>
+<body class="fit">
+<div class="shell">
+  <header class="topbar" id="topbar"></header>
+  <aside class="side" id="side"></aside>
+
+  <main class="content">
+    <div class="page-head">
+      <div>
+        <div class="page-title"><span class="dot"></span>发补意见草稿</div>
+        <div class="page-sub">复核后的结论在这里成文，可直接修改；确认无误后一键同步审评系统</div>
+      </div>
+      <div class="right">
+        <a class="btn" href="./01-任务列表.html">← 返回任务列表</a>
+      </div>
+    </div>
+
+    <div id="caseNotice"></div>
+    <div class="casebar" id="casebar"></div>
+
+    <div class="wb two-col" id="wb" style="--rdh:max(440px,calc(100vh - 236px))">
+      <!-- 左：问题清单 -->
+      <section class="wbc" id="probListCard">
+        <div class="wbc-hd">
+          <h4>问题清单</h4>
+          <span class="sub" id="outCount"></span>
+          <div class="right">
+            <button class="btn xs" data-pop="left" title="在页内弹出问题清单，可拖动、可分屏">一键弹出</button>
+            <button class="btn xs" id="addProblem" title="新增一个空白问题模块（序号自增）">＋</button>
+          </div>
+        </div>
+        <div class="wbc-bd" id="outBody"></div>
+        <div class="prob-ft-tip" title="同一 ch 文件名称的多来源问题自动合并为一个问题，子项按推送时间顺延编号">
+          同 ch 自动合并 · 子项按时间顺延
+        </div>
+      </section>
+
+      <!-- 右：发补意见草稿 -->
+      <section class="wbc" id="draftCard">
+        <div class="wbc-hd">
+          <h4 id="midTitle">发补意见草稿</h4>
+          <span class="sub" id="midSub"></span>
+          <div class="right">
+            <span class="tab-actions" id="draftActions">
+              <button class="btn xs" data-dact="save">保存草稿</button>
+              <button class="btn xs primary" data-dact="sync">一键同步审评系统</button>
+            </span>
+            <button class="btn xs" data-pop="mid" title="在页内弹出草稿，可拖动、可分屏">一键弹出</button>
+          </div>
+        </div>
+        <div class="wbc-bd" id="midBody" style="padding:0"></div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<datalist id="chapterList"></datalist>
+<div id="toastBox"></div>
+
+<script src="./assets/app.js"></script>
+<script src="./assets/data.js"></script>
+<script src="./assets/sum.js"></script>
+<script>
+(function () {
+  'use strict';
+  var $ = APP.$, $$ = APP.$$, esc = APP.esc, ic = APP.ic;
+  var CN = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十', '十一', '十二', '十三', '十四', '十五'];
+  function cnOrd(n) { return '（' + (CN[n - 1] || n) + '）'; }
+  var TABNAME = { rule: '规则引擎 · AI 建议', cmp: '比对智能体 · 比对结果', hist: '历史发补参考 · AI 总结' };
+
+  /* ================= 状态 ================= */
+  var ST = {
+    caseNo: 'CQX2600312',
+    case: null,
+    tab: 'rule',
+    mid: 'draft',
+    active: 'p1',
+    draft: [],
+    rules: [],
+    comps: [],
+    dirty: false,
+    dirtyIds: {},
+    loc: null,
+    hf: { sameEnt: false, sameProduct: true, cat: '', reg: '', from: '', to: '', kw: '' },
+    /* v3：三组预设范围开关 + 结果的展开/全量状态 + 是否已生成总结 */
+    preset: { ent: true, product: true, cat: false, free: false },
+    expanded: { ent: true, product: false, cat: false, free: false },
+    expandAll: {},
+    /* v4：进入页面即默认展示「同企业 + 同产品名称」两个维度的分析，不需要先点按钮 */
+    summed: true,
+    analyzed: true
+  };
+  function deepCopy(o) { return JSON.parse(JSON.stringify(o)); }
+
+  /* ================= ch 文件名称归并工具 ================= */
+  function stripOrd(k) { return String(k == null ? '' : k).replace(/^（[^）]*）\s*/, '').trim(); }
+  /** 'ch1.1 产品说明书' / 'CH 1.1' / 'ch1.1' → 统一成 'ch1.1' 作为合并键 */
+  function chKey(ch) {
+    var s = String(ch == null ? '' : ch).replace(/\s+/g, ' ').trim();
+    if (!s) return '';
+    var m = /^ch\s*([0-9]+(?:\.[0-9]+)*)/i.exec(s);
+    if (m) return 'ch' + m[1];
+    return s.toLowerCase();
+  }
+  /** 章节自然序：ch1.1 < ch1.2 < ch3.2 < ch5.1 < ch6.1 */
+  function chOrder(ch) {
+    var k = chKey(ch), m = /^ch([0-9]+(?:\.[0-9]+)*)$/.exec(k);
+    if (!m) return [9999, 9999, 9999];
+    var a = m[1].split('.').map(function (x) { return parseInt(x, 10) || 0; });
+    while (a.length < 3) a.push(0);
+    return a;
+  }
+  function cmpCh(a, b) {
+    var A = chOrder(a), B = chOrder(b);
+    for (var i = 0; i < 3; i++) { if (A[i] !== B[i]) return A[i] - B[i]; }
+    return 0;
+  }
+  function atVal(x) {
+    var t = String((x && x.at) || '').replace(/[^0-9]/g, '');
+    return t ? parseInt(t, 10) : 0;
+  }
+  function nowStamp() {
+    var d = new Date(), p2 = function (n) { return n < 10 ? '0' + n : '' + n; };
+    return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes());
+  }
+  var SHORTSRC = { rule: '规则校验', cmp: '比对智能体', hist: '历史发补', manual: '人工新增', mixed: '多来源' };
+  function shortSrc(k) { return SHORTSRC[k] || (DATA.SRC[k] ? DATA.SRC[k].t : '人工新增'); }
+
+  /**
+   * 问题清单 = 三个来源的汇总：
+   *   同名 ch 文件名称 → 归并为同一个问题；子项按来源时间先后排序后重新编号（一）（二）…
+   *   问题本身按 ch 章节自然序排列，未填 ch 的空白问题排在最后。
+   */
+  function normalizeDraft() {
+    var groups = [], pos = {};
+    (ST.draft || []).forEach(function (p) {
+      p.subs = p.subs || [];
+      p.subs.forEach(function (s) { if (s.t == null) s.t = stripOrd(s.k); });
+      var key = chKey(p.chapter);
+      var g = key ? pos[key] : null;
+      if (!g) {
+        g = { key: key || ('__blank_' + p.id), id: p.id, chapter: p.chapter || '',
+              subs: [], order: groups.length, blank: !key };
+        if (key) pos[key] = g;
+        groups.push(g);
+      } else if (String(p.chapter || '').trim().length > String(g.chapter).trim().length) {
+        /* 同一 ch 有多条时，保留描述最完整的那个 ch 名称 */
+        g.chapter = p.chapter;
+      }
+      p.subs.forEach(function (s) {
+        g.subs.push({
+          id: s.id, t: s.t, v: s.v,
+          src: s.src || p.src || 'manual',
+          from: s.from || p.from || '',
+          at: s.at || p.at || ''
+        });
+      });
+    });
+
+    groups.forEach(function (g) {
+      var seen = {}, keep = [];
+      g.subs.forEach(function (s) {
+        var kk = String(s.t).replace(/\s+/g, '') + '|' + String(s.v || '').replace(/\s+/g, '').slice(0, 48);
+        if (seen[kk]) return;
+        seen[kk] = 1; keep.push(s);
+      });
+      /* 时间顺序：早 → 晚（同一时间保持原推送顺序） */
+      keep.sort(function (a, b) { return atVal(a) - atVal(b); });
+      g.subs = keep;
+    });
+
+    groups.sort(function (a, b) {
+      if (a.blank !== b.blank) return a.blank ? 1 : -1;
+      if (a.blank && b.blank) return a.order - b.order;
+      var c = cmpCh(a.chapter, b.chapter);
+      return c || (a.order - b.order);
+    });
+
+    ST.draft = groups.map(function (g) {
+      var srcs = [];
+      g.subs.forEach(function (s) { if (srcs.indexOf(s.src) < 0) srcs.push(s.src); });
+      return {
+        id: g.id,
+        no: '',
+        src: srcs.length === 1 ? srcs[0] : (srcs.length ? 'mixed' : 'manual'),
+        srcs: srcs,
+        chapter: g.chapter,
+        from: g.subs.length ? g.subs[0].from : '',
+        at: g.subs.length ? g.subs[0].at : '',
+        subs: g.subs
+      };
+    });
+    return ST.draft;
+  }
+
+  APP.renderTop({ crumb: ['审评工作台', '发补智能体', '发补意见草稿'] });
+  APP.renderSide('draft');
+  (function fillChapterList() {
+    $('#chapterList').innerHTML = DATA.ENUM.chapter.map(function (v) { return '<option value="' + esc(v) + '">'; }).join('');
+  })();
+
+  /* ================= 载入案卷（按受理号） ================= */
+  function loadCase() {
+    var m = /[?&]case=([^&]+)/.exec(location.search);
+    var no = m ? decodeURIComponent(m[1]) : 'CQX2600312';
+    var c = DATA.CASES.filter(function (x) { return x.acceptNo === no; })[0];
+    if (!c) c = DATA.CASES.filter(function (x) { return x.acceptNo === 'CQX2600312'; })[0];
+    ST.case = c;
+    ST.caseNo = c.acceptNo;
+    ST.analyzed = (c.status !== '待处理');
+    ST.draft = ST.analyzed ? deepCopy(DATA.DRAFT.problems) : [];
+    normalizeDraft();
+    renumber();
+    ST.rules = ST.analyzed ? deepCopy(DATA.AI_RULES) : [];
+    ST.comps = ST.analyzed ? deepCopy(DATA.AI_COMPARE) : [];
+    ST.active = ST.draft.length ? ST.draft[0].id : '';
+    if (c.acceptNo !== 'CQX2600312') {
+      $('#caseNotice').innerHTML = '<div class="infobar i-gray">' + ic('info', 15, 'ib-ic') +
+        '<div>当前案卷受理号为 <b>' + esc(c.acceptNo) + '</b>。原型演示数据取自示例案卷 <b>CQX2600312</b>（一次性使用输液器），草稿与 AI 结果内容为演示构造。</div></div>';
+    }
+  }
+
+  /* ================= 通用 ================= */
+  function findP(pid) { return ST.draft.filter(function (p) { return p.id === pid; })[0]; }
+  function findS(p, sid) { return p.subs.filter(function (s) { return s.id === sid; })[0]; }
+  function allSubs() {
+    var a = [];
+    ST.draft.forEach(function (p) { p.subs.forEach(function (s) { a.push(s); }); });
+    return a;
+  }
+  function renumber() {
+    ST.draft.forEach(function (p, i) {
+      p.no = '问题' + (CN[i] || (i + 1));
+      p.subs.forEach(function (s, j) {
+        if (s.t == null) s.t = stripOrd(s.k);
+        s.t = stripOrd(s.t);
+        s.k = cnOrd(j + 1) + s.t;   /* 子项按归并后的顺序重新编号（一）（二）（三）… */
+      });
+    });
+  }
+  /** 由问题的 from 锚点推导出「应切到哪个来源页签、聚焦哪些条目」 */
+  function linkOf(p) {
+    var f = String((p && p.from) || '').trim();
+    if (!f) return null;
+    var keys = f.split('/').map(function (s) { return s.trim(); }).filter(Boolean);
+    if (!keys.length) return null;
+    if (/^A\d/.test(keys[0])) return { tab: 'rule', keys: keys };
+    if (/^B\d/.test(keys[0])) return { tab: 'cmp', keys: keys };
+    if (/^PT\d/.test(keys[0])) return { tab: 'hist', keys: keys };
+    return null;
+  }
+  /** 反向：由来源条目 ID 找到已并入草稿的那个问题 */
+  function probOfSource(sid) {
+    for (var i = 0; i < ST.draft.length; i++) {
+      var keys = String(ST.draft[i].from || '').split('/').map(function (s) { return s.trim(); });
+      if (keys.indexOf(sid) >= 0) return ST.draft[i];
+    }
+    return null;
+  }
+
+  /* ================= 案卷信息条 ================= */
+  /** 每条草稿问题都能一键跳回它的来源条目（比对 / 规则 / 历史） */
+  function traceLink(p) {
+    var f = String((p && p.from) || '').trim();
+    if (!f) return '';
+    var no = encodeURIComponent(ST.caseNo || '');
+    if (p.src === 'cmp') {
+      return '<a class="trace" target="_blank" href="./07-比对智能体.html?case=' + no +
+        '&diff=' + encodeURIComponent(f) + '&from=draft" title="跳回比对智能体输出结果中的这条差异及其原文依据">' +
+        '比对依据 ↗</a>';
+    }
+    if (p.src === 'rule') {
+      /* 草稿里的 from 是 A1 / A2 这类建议锚点，需要映射到规则校验页的 REG-* 规则编号 */
+      var key = f.split('/')[0].trim();
+      var sug = ST.rules.filter(function (r) { return r.id === key; })[0];
+      var mm = sug && /(REG-[^\s·]+)/.exec(sug.rule || '');
+      var rid = mm ? mm[1] : key;
+      return '<a class="trace" target="_blank" href="./05-规则校验.html?case=' + no +
+        '&rid=' + encodeURIComponent(rid) + '&from=draft" title="回到规则校验中这条规则的结论与原文">规则依据 ↗</a>';
+    }
+    if (p.src === 'hist') {
+      return '<a class="trace" target="_blank" href="./03-历史发补-AI总结.html?case=' + no +
+        '&pt=' + encodeURIComponent(f) + '" title="回到历史发补 AI 总结中的这条参考">历史参考 ↗</a>';
+    }
+    return '';
+  }
+
+  function pendingRules() { return ST.rules.filter(function (r) { return r.status === '待复核'; }).length; }
+  function pendingCmps() { return ST.comps.filter(function (c) { return !c.same && c.status === '待采纳'; }).length; }
+  function renderCasebar() {
+    var c = ST.case;
+    var st = DATA.STATUS[c.status] || DATA.STATUS['待复核'];
+    $('#casebar').innerHTML =
+      '<div class="cb-main">' +
+        '<div class="cb-name">' + esc(c.product) +
+          '<span class="badge ' + st.tone + '"><span class="bd"></span>' + esc(c.status) + '</span>' +
+        '</div>' +
+        '<div class="cb-meta">' +
+          '<span class="kv"><span class="k">受理号</span><b class="mono" style="color:var(--primary-d);font-size:13.5px">' + esc(c.acceptNo) + '</b></span>' +
+          '<span class="kv"><span class="k">企业名称</span><b>' + esc(c.ent) + '</b></span>' +
+          '<span class="kv"><span class="k">产品类别</span><b>' + esc(c.cat) + '</b></span>' +
+          '<span class="kv"><span class="k">注册类型</span><b>' + esc(c.regType) + '</b></span>' +
+          '<span class="kv"><span class="k">承办审评员</span><b>' + esc(c.reviewer) + '</b></span>' +
+        '</div>' +
+      '</div>' +
+      '<div class="cb-right">' +
+        '<span class="tag t-gray" id="draftStat">草稿 ' + ST.draft.length + ' 个问题 · 待复核 ' +
+          (pendingRules() + pendingCmps()) + ' 项' + (ST.dirty ? ' · <b style="color:var(--amber)">有未保存修改</b>' : '') + '</span>' +
+        '<button class="btn" id="btnHist">' + ic('book', 14) + ' 历史发补 · AI 总结</button>' +
+        '<button class="btn" id="btnSave">保存草稿</button>' +
+        '<button class="btn primary" id="btnSync">' + ic('sync', 14) + ' 一键同步审评系统</button>' +
+      '</div>';
+    $('#btnSave').onclick = doSave;
+    $('#btnSync').onclick = doSync;
+    $('#btnHist').onclick = function () {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ __fb: 'goto', tab: 'hist' }, '*');
+        return;
+      }
+      location.href = './08-发补智能体.html?case=' + encodeURIComponent(ST.caseNo) + '&tab=hist';
+    };
+  }
+
+  /* Tab 模式下（顶栏与案卷条被隐藏）在草稿卡片头提供同样的操作 */
+  var da = $('#draftActions');
+  if (da) da.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-dact]');
+    if (!b) return;
+    var k = b.dataset.dact;
+    if (k === 'save') doSave();
+    else if (k === 'sync') doSync();
+  });
+
+  /* ================= 左栏：问题清单 ================= */
+  function renderOutline() {
+    var box = $('#outBody');
+    $('#outCount').textContent = '共 ' + ST.draft.length + ' 个';
+    if (!ST.draft.length) {
+      box.innerHTML = '<div class="empty" style="padding:30px 10px"><div class="et">' +
+        (ST.analyzed ? '暂无问题' : '尚未生成草稿') + '</div><div class="es">' +
+        (ST.analyzed ? '可在规则校验 / 历史发补分析中采纳结论，或点击上方「＋」手工撰写'
+                     : '请点击右侧「启动 AI 分析」') + '</div></div>';
+      return;
+    }
+    var h = '';
+    ST.draft.forEach(function (p) {
+      var srcs = (p.srcs && p.srcs.length) ? p.srcs : [p.src || 'manual'];
+      var chips = srcs.map(function (k) {
+        var s2 = DATA.SRC[k] || DATA.SRC.manual;
+        return '<span class="src ' + s2.cls + '" title="' + esc(s2.t) + '">' + esc(shortSrc(k)) + '</span>';
+      }).join('');
+      h += '<div class="outline-item' + (p.id === ST.active ? ' on' : '') + '" data-pid="' + p.id + '"' +
+        ' title="点击定位到右侧草稿">' +
+        '<div class="oi-no">' + esc(p.no) +
+          (srcs.length > 1 ? '<span class="oi-merge" title="同一 ch 文件名称的多来源问题已自动合并">合并 ' + srcs.length + ' 来源</span>' : '') +
+        '</div>' +
+        '<div class="oi-ref">' + esc(p.chapter || '（未填写 ch 文件名称）') + '</div>' +
+        '<div class="oi-srcs">' + chips + '</div>' +
+        '<div class="oi-meta">' +
+          '<span class="tag t-gray">' + p.subs.length + ' 个子项</span>' +
+          (p.at ? '<span class="oi-at">' + esc(String(p.at).slice(5)) + '</span>' : '') +
+        '</div></div>';
+    });
+    box.innerHTML = h;
+  }
+
+  /* ================= 中栏：草稿 ================= */
+  function subHtml(p, s) {
+    var dirty = ST.dirtyIds['s:' + p.id + ':' + s.id] ? ' dirty' : '';
+    var src = s.src || p.src || 'manual';
+    var sInfo = DATA.SRC[src] || DATA.SRC.manual;
+    var multi = (p.srcs && p.srcs.length > 1);
+    return '<div class="sub" data-sid="' + s.id + '">' +
+      '<div class="sub-hd"><span class="sub-k" contenteditable="true" data-subk="1">' + esc(s.k) + '</span>' +
+        '<span class="sub-src ' + sInfo.cls + '" title="来源：' + esc(sInfo.t) + (s.from ? ' · ' + esc(s.from) : '') + '">' +
+          esc(shortSrc(src)) + '</span>' +
+        (s.at ? '<span class="sub-at" title="推送时间">' + esc(String(s.at).slice(5)) + '</span>' : '') +
+        '<div class="right">' +
+          (multi && s.from ? '<button class="btn xs basis" data-basis-sub="' + esc(s.id) + '" ' +
+            'title="' + esc(basisTitle(src)) + '">依据</button>' : '') +
+          '<button class="btn xs danger" data-subdel="1">删除子项</button>' +
+        '</div></div>' +
+      '<div class="ed' + dirty + '" contenteditable="true" data-subv="1" ' +
+        'data-ph="请输入本项发补意见的具体内容（可直接编辑）…">' + esc(s.v) + '</div>' +
+      '</div>';
+  }
+  function renderDraft() {
+    if (!ST.analyzed) {
+      return '<div class="empty" style="padding:60px 24px">' +
+        '<div class="eic">' + ic('cpu', 22) + '</div>' +
+        '<div class="et">该案卷尚未生成发补意见草稿</div>' +
+        '<div class="es">申报资料已拉取完成，可启动 AI 分析：规则引擎校验 + 比对智能体数据比对 + 历史发补意见检索</div>' +
+        '<div class="eact"><button class="btn primary" id="btnAnalyze">启动 AI 分析</button></div></div>';
+    }
+    if (!ST.draft.length) {
+      return '<div class="empty" style="padding:56px 24px">' +
+        '<div class="eic">' + ic('plus', 22) + '</div>' +
+        '<div class="et">草稿为空</div>' +
+        '<div class="es">在规则校验 / 历史发补分析中采纳结论，或点击「＋」新增一个空白问题模块</div>' +
+        '<div class="eact"><button class="btn primary" id="addBlankEmpty">＋ 新增空白模块</button></div></div>';
+    }
+    var h = '<div class="draft" id="draftBox">';
+    ST.draft.forEach(function (p) {
+      var srcs = (p.srcs && p.srcs.length) ? p.srcs : [p.src || 'manual'];
+      var multi = srcs.length > 1;
+      var chips = srcs.map(function (k) {
+        var s2 = DATA.SRC[k] || DATA.SRC.manual;
+        return '<span class="src ' + s2.cls + '">' + esc(s2.t) + '</span>';
+      }).join('');
+      h += '<div class="prob' + (p.id === ST.active ? ' on' : '') + '" data-pid="' + p.id + '" id="prob-' + p.id + '">' +
+        '<div class="prob-hd">' +
+          '<span class="prob-no">' + esc(p.no) + '</span>' +
+          chips +
+          (multi ? '<span class="tag t-blue" title="三个来源推来同一个 ch 文件名称时自动归并为一个问题">同 ch 合并 · 子项按时间顺延</span>' : '') +
+          (!multi ? '<button class="btn xs basis" data-basis="' + p.id + '" title="' + esc(basisTitle(p.src)) + '">' +
+            ic('book', 12) + '<span class="basis-lb">规则依据</span></button>' : '') +
+
+          (p.aiAdopted ? '<span class="tag t-green">AI 结论 · 人工已认可（' + esc(p.aiAdopted.label) + ' ' +
+            p.aiAdopted.n + '/' + p.aiAdopted.tot + '）</span>' : '') +
+          '<div class="right">' +
+            '<button class="btn xs sq plus" data-addblank="' + p.id + '" title="在此模块后新增一个空白问题模块（序号自增）">＋</button>' +
+            '<button class="btn xs sq minus" data-pdel="' + p.id + '" title="删除本问题模块（含全部子项）">－</button>' +
+            '<button class="btn xs sq" data-mv="up" title="上移">↑</button>' +
+            '<button class="btn xs sq" data-mv="down" title="下移">↓</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="prob-bd">' +
+          '<div class="prob-ref"><span class="rl">ch 文件名称</span>' +
+            '<input class="inp" list="chapterList" data-chap="1" value="' + esc(p.chapter) + '" ' +
+              'placeholder="请输入或选择 ch 文件名称（如 ch1.1 产品说明书）">' +
+          '</div>' +
+          p.subs.map(function (x) { return subHtml(p, x); }).join('') +
+          '<button class="btn xs" data-addsub="1">＋ 添加子项</button>' +
+        '</div></div>';
+    });
+    h += '</div>';
+    return h;
+  }
+
+  /* ================= 规则依据：按来源跳到对应页面 ================= */
+  function basisTitle(src) {
+    if (src === 'cmp') return '本条来自比对智能体，点击跳到该条差异的比对结果';
+    if (src === 'hist') return '本条采纳自历史发补意见，点击跳到该条历史参考';
+    if (src === 'rule' || src === 'rules') return '本条来自规则校验，点击跳到该条规则与依据';
+    return '人工新增，没有可跳转的规则 / 比对 / 历史依据';
+  }
+  /* 早期草稿的 from 是 A1/A2 这类建议锚点，按 ch 文件名称回查真实规则 */
+  function resolveRuleId(p) {
+    var f = String(p.from || '');
+    var m = f.match(/REG-[^\s/、,]+/);
+    if (m) return m[0];
+    var rs = (window.DATA && DATA.RULES) || [];
+    var ch = String(p.chapter || '').trim();
+    var want = chKey(ch);
+    var hit = rs.filter(function (r) { return String(r.ch || '').trim() === ch; })[0] ||
+      rs.filter(function (r) { return want && chKey(r.ch) === want; })[0] ||
+      rs.filter(function (r) { return ch && String(r.ch || '').indexOf(ch.slice(0, 5)) >= 0; })[0];
+    return hit ? hit.id : (rs[0] ? rs[0].id : '');
+  }
+  function openBasis(src, from, chapter) {
+    if (!src || src === 'mixed') {
+      APP.toast('该问题由多个来源合并而成，请点各子项右侧的「依据」分别查看', 'warn', 3000);
+      return;
+    }
+    if (src === 'manual' || !from) {
+      APP.toast('该条为人工新增，没有可跳转的规则 / 比对 / 历史依据', 'warn', 2800);
+      return;
+    }
+    var no = ST.caseNo || '';
+    var inFrame = window.parent && window.parent !== window;
+    if (src === 'cmp') {
+      if (inFrame) window.parent.postMessage({ __fb: 'goto', tab: 'compare', diff: from }, '*');
+      else location.href = './07-比对智能体.html?case=' + encodeURIComponent(no) + '&diff=' + encodeURIComponent(from);
+      return;
+    }
+    if (src === 'hist') {
+      if (inFrame) window.parent.postMessage({ __fb: 'goto', tab: 'hist', pt: from }, '*');
+      else location.href = './03-历史发补-AI总结.html?case=' + encodeURIComponent(no) + '&pt=' + encodeURIComponent(from);
+      return;
+    }
+    var rid = resolveRuleId({ from: from, chapter: chapter });
+    if (!rid) { APP.toast('未找到该问题对应的规则，请到规则校验页手工查看', 'warn', 2600); return; }
+    if (inFrame) window.parent.postMessage({ __fb: 'goto', tab: 'rules', rid: rid }, '*');
+    else location.href = './05-规则校验.html?case=' + encodeURIComponent(no) + '&rid=' + encodeURIComponent(rid);
+  }
+  document.addEventListener('click', function (e) {
+    var sb = e.target.closest('[data-basis-sub]');
+    if (sb) {
+      e.preventDefault();
+      var pel = sb.closest('.prob');
+      var pp = pel ? findP(pel.dataset.pid) : null;
+      var ss = pp ? findS(pp, sb.dataset.basisSub) : null;
+      if (ss) openBasis(ss.src || pp.src, ss.from, pp.chapter);
+      return;
+    }
+    var b = e.target.closest('[data-basis]');
+    if (!b) return;
+    e.preventDefault();
+    var p = findP(b.dataset.basis);
+    if (p) openBasis(p.src, p.from, p.chapter);
+  });
+
+  /* ================= 中栏：申报原文 ================= */
+  function renderReader() {
+    var loc = ST.loc;
+    var h = '<div class="reader">';
+    h += '<div class="reader-bar">' + ic('pin', 13) + '<span>原文定位</span>';
+    if (loc) {
+      h += '<span class="loc">' + esc(loc.sec) + ' · ' + esc(loc.para) + '</span>' +
+        '<span style="color:var(--t4)">命中：' + esc(loc.quote) + '</span>';
+    } else {
+      h += '<span style="color:var(--t4)">点击右栏条目上的「定位」按钮，可联动到此处并高亮原文</span>';
+    }
+    h += '<div class="right"><button class="btn xs" id="backDraft">← 返回草稿编辑</button></div></div>';
+    DATA.READER.forEach(function (s) {
+      h += '<div class="rsec" data-sec="' + esc(s.sec) + '"><div class="rsec-h">' + esc(s.title) + '</div>';
+      s.paras.forEach(function (p) {
+        var text = esc(p.text);
+        var hit = loc && loc.sec === s.sec && loc.para === p.n;
+        if (hit && loc.quote) {
+          var q = esc(loc.quote);
+          if (text.indexOf(q) >= 0) text = text.replace(q, '<span class="mark">' + q + '</span>');
+        }
+        h += '<div class="rpara' + (hit ? ' hit' : '') + '" data-para="' + esc(p.n) + '" data-sec="' + esc(s.sec) + '">' +
+          '<span class="pn">' + esc(p.n) + '</span>' + text + '</div>';
+      });
+      h += '</div>';
+    });
+    h += '</div>';
+    return h;
+  }
+
+  /* ================= 中栏：只保留发补意见草稿（v14 删除申报原文溯源） ================= */
+  function setMid() {
+    ST.mid = 'draft';
+    $('#midBody').innerHTML = renderDraft();
+    $('#midTitle').textContent = '发补意见草稿';
+    $('#midSub').textContent = ST.analyzed ? ('共 ' + ST.draft.length + ' 个问题 · ' + allSubs().length + ' 个子项') : '尚未生成';
+    scrollToActive();
+  }
+  function scrollToActive() {
+    var el = $('#prob-' + ST.active);
+    if (!el) return;
+    var c = $('#midBody');
+    c.scrollTop = Math.max(0, el.offsetTop - c.offsetTop - 8);
+  }
+
+  /* ================= 草稿编辑（事件委托） ================= */
+  var midBody = $('#midBody');
+  midBody.addEventListener('click', function (e) {
+    var probEl = e.target.closest('.prob');
+    var blank = e.target.closest('[data-addblank]');
+    if (blank) { addBlank(blank.dataset.addblank); return; }
+    if (e.target.closest('#addBlankEmpty')) { addBlank(null); return; }
+    var mv = e.target.closest('[data-mv]');
+    if (mv && probEl) { moveProb(probEl.dataset.pid, mv.dataset.mv); return; }
+    var pd = e.target.closest('[data-pdel]');
+    if (pd && probEl) { delProb(probEl.dataset.pid); return; }
+    var as = e.target.closest('[data-addsub]');
+    if (as && probEl) { addSub(probEl.dataset.pid); return; }
+    var sd = e.target.closest('[data-subdel]');
+    if (sd && probEl) { delSub(probEl.dataset.pid, sd.closest('.sub').dataset.sid); return; }
+    if (e.target.closest('#backDraft')) { setMid('draft'); return; }
+    if (e.target.closest('#btnAnalyze')) { runAnalyze(); return; }
+    /* 点问题块本身 → 触发与左侧清单一致的联动 */
+    if (probEl && !e.target.closest('button') && !e.target.closest('.ed') && !e.target.closest('.sub-k') && !e.target.closest('input')) {
+      focusProblem(probEl.dataset.pid, true);
+    }
+  });
+  midBody.addEventListener('input', function (e) {
+    var t = e.target;
+    var probEl = t.closest('.prob');
+    if (!probEl) return;
+    var p = findP(probEl.dataset.pid);
+    if (!p) return;
+    var subEl = t.closest('.sub');
+    if (t.hasAttribute('data-subv') && subEl) {
+      var s = findS(p, subEl.dataset.sid);
+      if (s) s.v = t.textContent;
+      t.classList.add('dirty');
+      ST.dirtyIds['s:' + p.id + ':' + subEl.dataset.sid] = 1;
+      markDirty();
+    } else if (t.hasAttribute('data-subk') && subEl) {
+      var s2 = findS(p, subEl.dataset.sid);
+      if (s2) { s2.t = stripOrd(t.textContent); s2.k = t.textContent; }
+      markDirty();
+    } else if (t.hasAttribute('data-chap')) {
+      p.chapter = t.value;
+      renderOutline();
+      markDirty();
+    }
+  });
+  /* ch 文件名称定稿后，按同 ch 重新归并问题清单（与原问题合并 / 子项按时间顺延） */
+  midBody.addEventListener('change', function (e) {
+    var t = e.target;
+    if (!t.hasAttribute || !t.hasAttribute('data-chap')) return;
+    var probEl = t.closest('.prob');
+    if (!probEl) return;
+    var p = findP(probEl.dataset.pid);
+    if (!p) return;
+    var before = ST.draft.length;
+    var sid0 = (p.subs[0] || {}).id;
+    p.chapter = t.value;
+    normalizeDraft();
+    var alive = ST.draft.some(function (x) { return x.id === p.id; });
+    if (!alive) {
+      var host = ST.draft.filter(function (x) {
+        return x.subs.some(function (y) { return y.id === sid0; });
+      })[0];
+      ST.active = host ? host.id : (ST.draft.length ? ST.draft[0].id : '');
+    }
+    afterStruct(); markDirty();
+    var after = ST.draft.length;
+    if (after < before) {
+      APP.toast('ch 文件名称相同，已合并为同一个问题（合并 ' + (before - after) + ' 个，子项按时间顺延重编号）', 'ok', 3400);
+    }
+  });
+
+  function markDirty() {
+    if (ST.dirty) return;
+    ST.dirty = true;
+    var el = $('#draftStat');
+    if (el) el.innerHTML = '草稿 ' + ST.draft.length + ' 个问题 · 待复核 ' +
+      (pendingRules() + pendingCmps()) + ' 项 · <b style="color:var(--amber)">有未保存修改</b>';
+  }
+
+  function afterStruct() {
+    renumber(); renderOutline(); setMid('draft'); renderCasebar();
+    /* 关键修复：焦点/滚动可能把 .content 隐式滚下去，导致左侧「问题清单」整列出画 */
+    var ct = document.querySelector('.content');
+    if (ct) ct.scrollTop = 0;
+  }
+  function moveProb(pid, dir) {
+    var i = ST.draft.map(function (p) { return p.id; }).indexOf(pid);
+    if (i < 0) return;
+    var j = dir === 'up' ? i - 1 : i + 1;
+    if (j < 0 || j >= ST.draft.length) { APP.toast('已经到' + (dir === 'up' ? '最前' : '最后') + '了', 'warn', 1500); return; }
+    var t = ST.draft[i]; ST.draft[i] = ST.draft[j]; ST.draft[j] = t;
+    afterStruct(); markDirty();
+  }
+  /** ＋：在当前模块之后插入一个空白模块（问题序号自增），子级字段 = ch 文件名称 + 问题描述 */
+  function addBlank(afterPid) {
+    var pid = 'p' + Date.now();
+    var stamp = nowStamp();
+    var mod = {
+      id: pid, no: '', src: 'manual', srcs: ['manual'], chapter: '', from: '', fromText: '', at: stamp,
+      subs: [{ id: pid + 's1', t: '问题描述', k: '（一）问题描述', v: '', src: 'manual', from: '', at: stamp }]
+    };
+    var i = afterPid ? ST.draft.map(function (p) { return p.id; }).indexOf(afterPid) : -1;
+    if (i >= 0) ST.draft.splice(i + 1, 0, mod); else ST.draft.push(mod);
+    ST.active = pid;
+    ST.analyzed = true;
+    afterStruct(); markDirty();
+    setTimeout(function () {
+      var el = $('#prob-' + pid + ' input[data-chap]');
+      /* preventScroll：避免浏览器为聚焦新输入框而把整页滚下去 */
+      if (el) { try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); } }
+      var box = $('#midBody'), card = $('#prob-' + pid);
+      if (box && card) box.scrollTop = Math.max(0, card.offsetTop - box.offsetTop - 8);
+      /* 左侧清单也滚到新增项，保证"点完就能看到多了一条" */
+      var ob = $('#outBody'), oel = ob ? ob.querySelector('[data-pid="' + pid + '"]') : null;
+      if (ob && oel) ob.scrollTop = Math.max(0, oel.offsetTop - ob.offsetTop - 8);
+    }, 20);
+    APP.toast('已在问题清单新增空白问题 ' + findP(pid).no + '，填写 ch 文件名称后可与同 ch 问题自动合并', 'ok', 3000);
+    return pid;
+  }
+  /** －：整块删除该问题模块，提供 8 秒撤销窗口 */
+  function delProb(pid) {
+    var p = findP(pid);
+    if (!p) return;
+    var i = ST.draft.indexOf(p);
+    var snapshot = deepCopy(p);
+    var label = p.no + '（' + (p.chapter || '未填写 ch 文件名称') + '，含 ' + p.subs.length + ' 个子项）';
+    ST.draft.splice(i, 1);
+    if (ST.active === pid) ST.active = ST.draft.length ? ST.draft[Math.min(i, ST.draft.length - 1)].id : '';
+    afterStruct(); markDirty();
+    APP.toastUndo('已删除 ' + label, function () {
+      ST.draft.splice(Math.min(i, ST.draft.length), 0, snapshot);
+      ST.active = snapshot.id;
+      afterStruct(); markDirty();
+      APP.toast('已撤销删除，' + snapshot.no + ' 已恢复', 'ok');
+    });
+  }
+  function addSub(pid) {
+    var p = findP(pid);
+    if (!p) return;
+    p.subs.push({
+      id: pid + 's' + Date.now(), t: '新问题点', k: cnOrd(p.subs.length + 1) + '新问题点',
+      v: '', src: 'manual', from: '', at: nowStamp()
+    });
+    afterStruct(); markDirty();
+  }
+  /** 删除子项：先弹窗二次确认，确认后再删（8 秒内可撤销） */
+  function delSub(pid, sid) {
+    var p = findP(pid);
+    if (!p) return;
+    var s = findS(p, sid);
+    if (!s) return;
+    if (p.subs.length <= 1) { APP.toast('每个问题至少保留一个子项，可直接编辑其内容', 'warn', 2200); return; }
+    var label = s.k || '该子项';
+    var body = String(s.v || '').replace(/\s+/g, ' ').trim();
+    var brief = body.length > 64 ? body.slice(0, 64) + '…' : body;
+    APP.confirmDialog({
+      title: '删除子项',
+      tone: 'amber',
+      okText: '确认删除',
+      body: '确定删除 <b>' + esc(p.no) + '</b> 下的子项 <b>' + esc(label) + '</b> 吗？' +
+        (brief ? '<div class="cfm-brief">' + esc(brief) + '</div>' : '') +
+        '<div class="cfm-note">删除后该子项内容不再写入草稿；确认后有 8 秒撤销窗口，过期不可恢复。</div>'
+    }, function () {
+      var pp = findP(pid);
+      if (!pp) return;
+      var ss = findS(pp, sid);
+      if (!ss) return;
+      var at = pp.subs.indexOf(ss);
+      pp.subs.splice(at, 1);
+      afterStruct(); markDirty();
+      APP.toastUndo('已删除子项「' + label + '」', function () {
+        var p3 = findP(pid);
+        if (!p3) return;
+        p3.subs.splice(Math.min(at, p3.subs.length), 0, ss);
+        afterStruct(); markDirty();
+        APP.toast('已撤销删除，子项「' + label + '」已恢复', 'ok');
+      });
+    });
+  }
+  $('#addProblem').onclick = function () { addBlank(null); };
+
+  /* 左栏问题清单：点任意问题 → 中栏定位 + 右栏切到它的来源并高亮（核心联动入口） */
+  $('#outBody').addEventListener('click', function (e) {
+    var it = e.target.closest('.outline-item');
+    if (it) focusProblem(it.dataset.pid);
+  });
+
+  /* ================= 双向联动 ================= */
+  /**
+   * 点问题清单/问题块 → 中栏定位 + 右栏切到对应来源并高亮来源条目
+   * @param {string} pid 问题 id
+   * @param {boolean} keepTab 是否保持当前中栏视图（点问题块时不切换中栏）
+   */
+  function focusProblem(pid, keepTab) {
+    var p = findP(pid);
+    if (!p) return;
+    ST.active = pid;
+    $$('#outBody .outline-item').forEach(function (x) { x.classList.toggle('on', x.dataset.pid === pid); });
+    if (ST.mid === 'draft') {
+      scrollToActive();
+      $$('#midBody .prob').forEach(function (x) { x.classList.toggle('on', x.dataset.pid === pid); });
+    } else {
+      setMid();
+    }
+  }
+
+  /* ================= 右栏 ================= */
+  function renderTabs() {
+    if (!$('#rTabs')) return;
+    var t = [
+      { k: 'rule', t: '规则引擎', n: pendingRules(), dot: 'var(--amber)' },
+      { k: 'cmp', t: '比对智能体', n: pendingCmps(), dot: 'var(--blue)' },
+      { k: 'hist', t: '历史发补参考', n: 0, dot: 'var(--t4)' }
+    ];
+    $('#rTabs').innerHTML = t.map(function (x) {
+      return '<div class="tab' + (ST.tab === x.k ? ' on' : '') + '" data-tab="' + x.k + '">' +
+        '<span style="width:7px;height:7px;border-radius:50%;background:' + x.dot + ';flex:0 0 7px"></span>' +
+        esc(x.t) + (x.n ? '<span class="n">' + x.n + '</span>' : '') + '</div>';
+    }).join('');
+  }
+  var rTabsEl = $('#rTabs');
+  if (rTabsEl) rTabsEl.onclick = function (e) {
+    var b = e.target.closest('.tab');
+    if (b) { ST.tab = b.dataset.tab; renderRight(); }
+  };
+  function renderRight(opts) {
+    if (!$('#rBody')) return;    /* v14：智能辅助模块已删除 */
+    var focus = (opts && opts.focus) || [];
+    /* 历史发补参考 Tab 内容最丰富（三组范围 + 逐条结论），该 Tab 下把右栏加宽 */
+    var wb = $('#wb'); if (wb) wb.classList.toggle('wide-r', ST.tab === 'hist');
+    renderTabs();
+    var body = $('#rBody');
+    if (ST.tab === 'rule') body.innerHTML = ruleBody();
+    else if (ST.tab === 'cmp') body.innerHTML = cmpBody();
+    else body.innerHTML = histBody();
+    if (ST.tab === 'hist') bindHist();
+    if (focus.length) {
+      $$('#rBody [data-focus]').forEach(function (el) {
+        var keys = String(el.dataset.focus).split('/').map(function (s) { return s.trim(); });
+        var hit = focus.some(function (k) { return keys.indexOf(k) >= 0; });
+        if (hit) el.classList.add('focus');
+      });
+      var first = $('#rBody .focus');
+      if (first) {
+        var c = $('#rBody');
+        c.scrollTop = Math.max(0, first.offsetTop - c.offsetTop - 10);
+      }
+      setTimeout(function () {
+        $$('#rBody .focus').forEach(function (e2) { e2.classList.remove('focus'); });
+      }, 4200);
+    }
+  }
+
+  /* ---- 规则引擎 ---- */
+  function shortQ(q) { return q.length > 16 ? q.slice(0, 16) + '…' : q; }
+  function ruleBody() {
+    var adopted = ST.rules.filter(function (r) { return r.status === '已采纳'; }).length;
+    var ignored = ST.rules.filter(function (r) { return r.status === '已忽略'; }).length;
+    var h = '<div class="infobar i-amber">' + ic('warn', 15, 'ib-ic') +
+      '<div><b>规则引擎输出需人工复核。</b>以下为系统按预设规则跑出的 AI 结论，仅作提示；只有点击「采纳入草稿」的条目才会进入最终的发补意见草稿。</div></div>';
+    h += '<div style="font-size:12px;color:var(--t4);margin-bottom:9px">共 ' + ST.rules.length +
+      ' 条 · 待复核 ' + pendingRules() + ' · 已采纳 ' + adopted + ' · 已忽略 ' + ignored + '</div>';
+    ST.rules.forEach(function (r) { h += ruleCard(r); });
+    return h;
+  }
+  function ruleCard(r) {
+    var done = r.status === '已采纳', ign = r.status === '已忽略';
+    var lvl = r.level === '高' ? 'b-red' : r.level === '中' ? 'b-amber' : 'b-gray';
+    var linked = probOfSource(r.id);
+    var h = '<div class="aicard' + (done ? ' done' : ign ? ' ignored' : '') + '" data-focus="' + r.id + '">' +
+      '<div class="aicard-hd">' + ic('spark', 14) + '<span class="ti">' + esc(r.title) + '</span>' +
+        '<span class="badge ' + lvl + '">' + esc(r.level) + '级</span>' +
+        (done ? '<span class="badge b-green"><span class="bd"></span>已采纳</span>'
+              : ign ? '<span class="badge b-gray">已忽略</span>' : '') +
+      '</div><div class="aicard-bd">' +
+        '<div class="field"><div class="lb">AI 结论</div><div class="vl ai">' + esc(r.conclusion) + '</div></div>' +
+        '<div class="field"><div class="lb">判断依据</div><div class="vl rule">' + esc(r.rule) + '</div></div>' +
+        '<div class="field"><div class="lb">企业申报原文溯源（点击定位，原文将高亮）</div>' +
+          r.evidence.map(function (e, i) {
+            return '<span class="evref" data-loc="' + r.id + '|' + i + '">' + ic('pin', 12) +
+              '<span>' + esc(e.sec) + ' · ' + esc(e.para) + '</span>' +
+              '<span class="q">“' + esc(shortQ(e.quote)) + '”</span></span>';
+          }).join('') +
+        '</div>' +
+      '</div><div class="aicard-ft">';
+    if (!done && !ign) {
+      h += '<button class="btn xs primary" data-adopt="' + r.id + '">采纳入草稿</button>' +
+           '<button class="btn xs" data-ignore="' + r.id + '">忽略</button>';
+    } else if (done) {
+      h += (linked ? '<a class="btn xs" data-goto="' + linked.id + '">已并入 ' + esc(linked.no) + ' ›</a>'
+                   : '<span class="st">已采纳</span>') +
+           '<span class="sp"></span><button class="btn xs" data-undo="' + r.id + '">撤销采纳</button>';
+    } else {
+      h += '<span class="st">本条已忽略，不进入草稿</span><span class="sp"></span>' +
+           '<button class="btn xs" data-undo="' + r.id + '">恢复待复核</button>';
+    }
+    h += '</div></div>';
+    return h;
+  }
+  function findRule(id) { return ST.rules.filter(function (r) { return r.id === id; })[0]; }
+  function findCmp(id) { return ST.comps.filter(function (c) { return c.id === id; })[0]; }
+
+  /* ---- 比对智能体 ---- */
+  function cmpBody() {
+    var adoptable = ST.comps.filter(function (c) { return !c.same && c.status === '待采纳'; });
+    var h = '<div class="infobar i-blue">' + ic('check', 15, 'ib-ic') +
+      '<div><b>比对智能体数据为系统自动比对结果，完全可信，无需人工复核。</b>点击「并入草稿」将差异项写入草稿；标注「一致」的条目无差异，无需处理。</div></div>';
+    if (adoptable.length) {
+      h += '<button class="btn sm primary" id="adoptAllCmp" style="width:100%;margin-bottom:10px">' +
+        ic('plus', 13) + ' 一键并入全部差异项（' + adoptable.length + ' 项）</button>';
+    }
+    ST.comps.forEach(function (c) {
+      var adopted = c.status === '已采纳';
+      var linked = probOfSource(c.id);
+      h += '<div class="aicard' + (c.same ? '' : adopted ? ' done' : '') + '" data-focus="' + c.id + '">' +
+        '<div class="aicard-hd">' + ic(c.same ? 'check' : 'sync', 14) + '<span class="ti">' + esc(c.item) + '</span>' +
+          (c.same ? '<span class="badge b-green"><span class="bd"></span>一致</span>'
+                  : adopted ? '<span class="badge b-green"><span class="bd"></span>已并入</span>'
+                            : '<span class="badge b-amber"><span class="bd"></span>存在差异</span>') +
+        '</div><div class="aicard-bd">' +
+          '<div class="field"><div class="lb">' + esc(c.aLabel) + '</div><div class="vl">' + esc(c.aVal) + '</div></div>' +
+          '<div class="field"><div class="lb">' + esc(c.bLabel) + '</div><div class="vl">' + esc(c.bVal) + '</div></div>' +
+          '<div class="field"><div class="lb">比对结论</div><div class="vl ai">' + esc(c.conclusion) + '</div></div>' +
+        '</div>';
+      if (!c.same) {
+        h += '<div class="aicard-ft">';
+        if (!adopted) h += '<button class="btn xs primary" data-cmpadopt="' + c.id + '">并入草稿</button>' +
+                           '<button class="btn xs" data-cmpignore="' + c.id + '">不处理</button>';
+        else h += (linked ? '<a class="btn xs" data-goto="' + linked.id + '">已并入 ' + esc(linked.no) + ' ›</a>'
+                          : '<span class="st">已并入</span>') +
+                  '<span class="sp"></span><button class="btn xs" data-cmpundo="' + c.id + '">撤销</button>';
+        h += '</div>';
+      }
+      h += '</div>';
+    });
+    return h;
+  }
+
+  /* ---- 历史发补参考：三组预设范围 + AI 分模块结论 + 一键采纳 ---- */
+  function coveredPoints() {
+    var s = SUM.coveredFromDraft(ST.draft);
+    (ST.case.covered || []).forEach(function (pt) { if (s.indexOf(pt) < 0) s.push(pt); });
+    return s;
+  }
+  function scopeListOf(sp) { return DATA.HISTORY.filter(sp.match); }
+  function freeFiltered() {
+    var kw = (ST.hf.kw || '').trim().toLowerCase();
+    return DATA.HISTORY.filter(function (x) {
+      if (ST.hf.sameEnt && x.ent !== ST.case.ent) return false;
+      if (ST.hf.sameProduct && x.product !== ST.case.product) return false;
+      if (ST.hf.cat && x.cat !== ST.hf.cat) return false;
+      if (ST.hf.reg && x.regType !== ST.hf.reg) return false;
+      if (ST.hf.from && x.date < ST.hf.from) return false;
+      if (ST.hf.to && x.date > ST.hf.to) return false;
+      if (kw) {
+        var hay = (x.acceptNo + x.ent + x.product + x.sum + SUM.pointsText(x)).toLowerCase();
+        if (hay.indexOf(kw) < 0) return false;
+      }
+      return true;
+    });
+  }
+  function describeFree() {
+    var a = [];
+    if (ST.hf.sameEnt) a.push('同企业');
+    if (ST.hf.sameProduct) a.push('同产品名称一致');
+    if (ST.hf.cat) a.push(ST.hf.cat);
+    if (ST.hf.reg) a.push(ST.hf.reg);
+    if (ST.hf.from || ST.hf.to) a.push((ST.hf.from || '不限') + '~' + (ST.hf.to || '不限'));
+    if (ST.hf.kw) a.push('含“' + ST.hf.kw + '”');
+    return a.length ? a.join(' · ') : '全部历史案卷';
+  }
+  var SCOPE_BADGE = { ent: 'A', product: 'B', cat: 'C', free: 'D' };
+  var SCOPE_LABEL = { ent: '同企业', product: '同产品名称完全一致', cat: '同分类目录 · 相似产品', free: '自由筛选范围' };
+
+  function buildScopes() {
+    var out = [];
+    SUM.scopePresets(ST.case).forEach(function (sp) {
+      if (ST.preset[sp.key] === false) return;
+      out.push({ key: sp.key, label: sp.label, sub: sp.sub, desc: sp.desc, badge: SCOPE_BADGE[sp.key], list: scopeListOf(sp) });
+    });
+    if (ST.preset.free) {
+      out.push({ key: 'free', label: '自由筛选', sub: describeFree(), desc: '自行组合筛选条件得到的范围', badge: 'D', list: freeFiltered() });
+    }
+    out.forEach(function (sc) { sc.stat = SUM.conclusionsFor(sc.list, ST.case, coveredPoints()); });
+    return out;
+  }
+
+  function histBody() {
+    var h = '<div class="infobar i-gray">' + ic('info', 15, 'ib-ic') +
+      '<div><b>历史发补意见仅用于审评老师自查、查漏补缺。</b>不构成规则，不作为强制发补依据。' +
+      'AI 结论可直接「一键采纳」写入本页的发补意见草稿，采纳即视为<b>人工已认可</b>，无需复制粘贴。</div></div>';
+
+    h += '<div class="aibar">' +
+      '<span class="aic">' + ic('spark', 17) + '</span>' +
+      '<div><div class="at">历史发补案例 · AI 总结分析</div>' +
+      '<div class="as">AI 默认按「同企业 / 同产品名称一致 / 同分类目录」三个范围分析，产出「高频共性问题 / 差异但需关注 / 易遗漏审评点提醒」</div></div>' +
+      '<div class="ar">' +
+        '<button class="btn primary sm" id="btnAiSum">' + ic('spark', 13) + ' 一键 AI 总结分析</button>' +
+        '<a class="btn xs" target="_blank" rel="noopener" href="./03-历史发补-AI总结.html?case=' + encodeURIComponent(ST.caseNo) + '">打开完整总结页面 ›</a>' +
+      '</div></div>';
+
+    h += '<div class="seclb">分析范围（预设由当前案卷属性自动推导，点选可增删）</div>';
+    h += '<div class="pchips">';
+    SUM.scopePresets(ST.case).forEach(function (sp) {
+      h += '<span class="pchip' + (ST.preset[sp.key] === false ? '' : ' on') + '" data-preset="' + sp.key + '" title="' + esc(sp.desc) + '">' +
+        esc(sp.label) + ' <b>' + scopeListOf(sp).length + '</b></span>';
+    });
+    h += '</div>';
+    h += '<div style="font-size:11.5px;color:var(--t4);margin:-3px 0 10px;line-height:1.65">' +
+      '需要按申请人 / 器械品类 / 申请类型等条件自定义范围？' +
+      '<a target="_blank" rel="noopener" href="./03-历史发补-AI总结.html?case=' + encodeURIComponent(ST.caseNo) + '" style="color:var(--primary)">前往完整查询页 ›</a>' +
+      '</div>';
+
+    h += '<div id="histResult"></div>';
+    return h;
+  }
+
+  function freeFilterHtml() {
+    return '<div class="hfilter"><div class="hf-row">' +
+      '<label class="chk"><input type="checkbox" id="hfEnt"' + (ST.hf.sameEnt ? ' checked' : '') + '> 同企业（' + esc(ST.case.ent) + '）</label>' +
+      '<label class="chk"><input type="checkbox" id="hfProd"' + (ST.hf.sameProduct ? ' checked' : '') + '> 同产品名称完全一致（' + esc(ST.case.product) + '）</label>' +
+      '</div><div class="hf-row">' +
+      '<div class="fld"><span>产品类别</span><select class="sel" id="hfCat"><option value="">全部</option>' +
+        DATA.ENUM.cat.map(function (v) { return '<option' + (ST.hf.cat === v ? ' selected' : '') + '>' + esc(v) + '</option>'; }).join('') +
+      '</select></div>' +
+      '<div class="fld"><span>注册类型</span><select class="sel" id="hfReg"><option value="">全部</option>' +
+        DATA.ENUM.regType.map(function (v) { return '<option' + (ST.hf.reg === v ? ' selected' : '') + '>' + esc(v) + '</option>'; }).join('') +
+      '</select></div>' +
+      '</div><div class="hf-row">' +
+      '<div class="fld"><span>发补时间</span><input class="inp" type="date" id="hfFrom" value="' + esc(ST.hf.from) + '" style="width:130px">' +
+        '<span style="color:var(--t4)">~</span><input class="inp" type="date" id="hfTo" value="' + esc(ST.hf.to) + '" style="width:130px"></div>' +
+      '</div><div class="hf-row">' +
+      '<input class="inp" id="hfKw" value="' + esc(ST.hf.kw) + '" placeholder="关键词（受理号 / 企业 / 产品 / 问题点）" style="flex:1;min-width:120px">' +
+      '<button class="btn sm primary" id="hfQuery" style="height:32px">查询</button>' +
+      '<button class="btn sm" id="hfReset" style="height:32px">重置</button>' +
+      '</div></div>';
+  }
+
+  function renderHistResult() {
+    var box = $('#histResult');
+    if (!box) return;
+    var scopes = buildScopes();
+    var h = '';
+    if (!scopes.length) {
+      h += '<div class="empty" style="padding:24px 10px"><div class="eic">' + ic('filter', 18) + '</div>' +
+        '<div class="et">未选择任何分析范围</div><div class="es">请至少勾选一个预设范围，或打开「自由筛选」</div></div>';
+      box.innerHTML = h;
+      return;
+    }
+    var tot = scopes.reduce(function (s, x) { return s + x.stat.tot; }, 0);
+    h += '<div class="scopehd">已选 <b>' + scopes.length + '</b> 个范围 · 合计命中 <b>' + tot + '</b> 份案卷</div>';
+
+    if (!ST.summed) {
+      h += '<div class="ph" style="margin-top:10px"><div class="phi">' + ic('spark', 19) + '</div>' +
+        '<div class="pht">尚未生成 AI 总结</div>' +
+        '<div class="phs">已选 ' + scopes.length + ' 个范围、合计 ' + tot + ' 份历史案卷。<br>' +
+        '点击上方「一键 AI 总结分析」生成结论，可逐条一键采纳进草稿。</div></div>';
+      box.innerHTML = h;
+      return;
+    }
+    scopes.forEach(function (sc) {
+      h += SUM.renderScopeCard(sc, {
+        badge: sc.badge,
+        collapsed: !ST.expanded[sc.key],
+        expandAll: !!ST.expandAll[sc.key],
+        canAdopt: true,
+        adoptedMap: adoptedMap(),
+        scope: sc.key
+      });
+    });
+    h += '<div class="scalenote" style="margin-top:2px">' + ic('info', 13) +
+      '<div><b>关于采纳：</b>点「一键采纳」后，该结论（参照话术 + 结论文据）会写入本页的发补意见草稿，' +
+      '并标记为「人工已认可」，无需复制粘贴。采纳后可在左侧问题清单中查看与继续编辑。</div></div>';
+    box.innerHTML = h;
+  }
+
+  function togglePreset(key) {
+    var on;
+    if (key === 'free') { ST.preset.free = !ST.preset.free; on = ST.preset.free; }
+    else { ST.preset[key] = (ST.preset[key] === false); on = ST.preset[key]; }
+    ST.summed = false;
+    renderRight();
+    APP.toast('已' + (on ? '加入' : '移除') + '范围「' + (SCOPE_LABEL[key] || key) + '」，当前共 ' +
+      buildScopes().length + ' 个范围', 'ok', 2200);
+  }
+
+  /** 把一条 AI 结论写进发补意见草稿，标记人工已认可 */
+  function adoptByPoint(pid, n, tot, label, opts) {
+    opts = opts || {};
+    var exist = probOfSource(pid);
+    if (exist) {
+      if (!opts.silent) APP.toast('该结论已在草稿「' + exist.no + '」中，未重复添加', 'warn', 2400);
+      return null;
+    }
+    var pay = SUM.adoptPayload(pid, n, tot, label);
+    if (!pay) return null;
+    var newId = 'p' + Date.now() + Math.floor(Math.random() * 90);
+    ST.draft.push({
+      id: newId, no: '', src: 'hist', chapter: pay.chapter, from: pid, fromText: '历史发补 · AI 总结',
+      aiAdopted: { label: label, n: n, tot: tot, by: '叶颖', at: fmtNowShort() },
+      subs: [{ id: newId + 's1', k: pay.sub, v: pay.body }]
+    });
+    ST.analyzed = true;
+    ST.active = newId;
+    afterStruct();
+    markDirty();
+    return findP(newId);
+  }
+  function fmtNowShort() {
+    var d = new Date();
+    function p2(n) { return n < 10 ? '0' + n : '' + n; }
+    return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes());
+  }
+  function adoptAi(btn) {
+    var pid = btn.dataset.aiadopt;
+    var n = parseInt(btn.dataset.n || '0', 10);
+    var tot = parseInt(btn.dataset.tot || '0', 10);
+    var key = btn.dataset.scope;
+    var label = SCOPE_LABEL[key] || 'AI 总结分析';
+    var np = adoptByPoint(pid, n, tot, label);
+    if (!np) return;
+    /* 重绘结果区（保留滚动位置），让该条呈现「人工已认可 + 已采纳 问题X ›」状态 */
+    var box = $('#rBody');
+    var keep = box ? box.scrollTop : 0;
+    renderHistResult();
+    if (box) box.scrollTop = keep;
+    APP.toast('已采纳并写入发补意见草稿：' + np.no + '（标记为人工已认可）', 'ok', 3200);
+  }
+  /** 已采纳的问题点 → 对应草稿问题，供结果区回显「已采纳」状态 */
+  function adoptedMap() {
+    var m = {};
+    ST.draft.forEach(function (p) {
+      String(p.from || '').split('/').forEach(function (raw) {
+        var k = raw.trim();
+        if (k.indexOf('PT') === 0) m[k] = { id: p.id, no: p.no };
+      });
+    });
+    return m;
+  }
+
+  function readHf() {
+    ST.hf.sameEnt = $('#hfEnt').checked;
+    ST.hf.sameProduct = $('#hfProd').checked;
+    ST.hf.cat = $('#hfCat').value;
+    ST.hf.reg = $('#hfReg').value;
+    ST.hf.from = $('#hfFrom').value;
+    ST.hf.to = $('#hfTo').value;
+    ST.hf.kw = $('#hfKw').value;
+  }
+  function bindHist() {
+    var b = $('#btnAiSum');
+    if (b) b.onclick = runAiSum;
+    if ($('#hfQuery')) {
+      $('#hfQuery').onclick = function () {
+        readHf(); ST.summed = false; renderHistResult();
+        APP.toast('自由筛选已更新，命中 ' + freeFiltered().length + ' 份历史案卷', 'ok', 2200);
+      };
+      $('#hfReset').onclick = function () {
+        ST.hf = { sameEnt: false, sameProduct: true, cat: '', reg: '', from: '', to: '', kw: '' };
+        ST.summed = false; renderRight();
+      };
+    }
+    var kw = $('#hfKw');
+    if (kw) kw.addEventListener('keydown', function (e) { if (e.key === 'Enter' && $('#hfQuery')) $('#hfQuery').click(); });
+    renderHistResult();
+  }
+
+  /* ---- 右栏事件（统一委托；v14 智能辅助已删除，整块跳过） ---- */
+  var rBodyEl = $('#rBody');
+  if (rBodyEl) rBodyEl.addEventListener('click', function (e) {
+    var t = e.target;
+    var goto = t.closest('[data-goto]');
+    if (goto) { focusProblem(goto.dataset.goto, true); return; }
+    var loc = t.closest('[data-loc]');
+    if (loc) {
+      var parts = loc.dataset.loc.split('|');
+      var r = findRule(parts[0]);
+      var ev = r && r.evidence[parseInt(parts[1], 10)];
+      if (ev) {
+        if (EMBED) {
+          if (window.opener && window.opener.__PROTO && window.opener.__PROTO.locate) {
+            window.opener.__PROTO.locate(ev.sec, ev.para, ev.quote);
+            window.opener.focus();
+            APP.toast('已在主窗口定位到原文并高亮', 'ok', 2400);
+          } else {
+            APP.toast('分屏窗口无法显示原文：请回主窗口查看，或再弹出「申报原文」模块配合使用', 'warn', 3400);
+          }
+          return;
+        }
+        locate(ev.sec, ev.para, ev.quote);
+      }
+      return;
+    }
+    var ad = t.closest('[data-adopt]'); if (ad) { adoptRule(ad.dataset.adopt); return; }
+    var ig = t.closest('[data-ignore]'); if (ig) { ignoreRule(ig.dataset.ignore); return; }
+    var un = t.closest('[data-undo]'); if (un) { undoRule(un.dataset.undo); return; }
+    var ca = t.closest('[data-cmpadopt]'); if (ca) { adoptCmp(ca.dataset.cmpadopt); return; }
+    var cd = t.closest('[data-cmpundo]'); if (cd) { undoCmp(cd.dataset.cmpundo); return; }
+    var ci = t.closest('[data-cmpignore]');
+    if (ci) { var cc = findCmp(ci.dataset.cmpignore); if (cc) { cc.status = '不处理'; renderRight(); APP.toast('已标记为不处理', 'ok', 1500); } return; }
+    if (t.closest('#adoptAllCmp')) { adoptAllCmp(); return; }
+    if (t.closest('#btnAiSum')) { runAiSum(); return; }
+    var hi = t.closest('[data-hist]'); if (hi) { showHistDetail(hi.dataset.hist); return; }
+    /* v3：预设范围 / 范围折叠 / 展开全部 / AI 一键采纳 */
+    var pre = t.closest('[data-preset]'); if (pre) { togglePreset(pre.dataset.preset); return; }
+    var stg = t.closest('[data-scope-toggle]');
+    if (stg) {
+      var card = stg.closest('.scopecard');
+      if (card) { ST.expanded[card.dataset.scope] = !ST.expanded[card.dataset.scope]; renderHistResult(); }
+      return;
+    }
+    var more = t.closest('[data-more]');
+    if (more) {
+      var c2 = more.closest('.scopecard');
+      if (c2) { ST.expandAll[c2.dataset.scope] = true; renderHistResult(); }
+      return;
+    }
+    var ai = t.closest('[data-aiadopt]'); if (ai) { adoptAi(ai); return; }
+  });
+
+  function adoptRule(id) {
+    var r = findRule(id);
+    if (!r || r.status === '已采纳') return;
+    r.status = '已采纳';
+    var pid = 'p' + Date.now();
+    ST.draft.push({
+      id: pid, no: '', src: 'rule', chapter: r.ch || 'ch1.1 产品说明书', from: r.id, fromText: r.id,
+      subs: [{ id: pid + 's1', k: (r.sub || '（一）问题点'), v: r.conclusion }]
+    });
+    ST.analyzed = true;
+    ST.active = pid;
+    afterStruct(); markDirty();
+    renderRight();
+    APP.toast('已采纳「' + r.title + '」，并新增为 ' + findP(pid).no, 'ok', 2600);
+  }
+  function ignoreRule(id) {
+    var r = findRule(id); if (!r) return;
+    r.status = '已忽略'; renderRight();
+    APP.toast('已忽略本条规则建议（不进入草稿）', 'warn', 1800);
+  }
+  function undoRule(id) {
+    var r = findRule(id); if (!r) return;
+    if (r.status === '已采纳') {
+      var linked = probOfSource(r.id);
+      if (linked) {
+        var i = ST.draft.indexOf(linked);
+        if (i >= 0) ST.draft.splice(i, 1);
+      }
+      r.inDraft = '';
+    }
+    r.status = '待复核';
+    afterStruct(); renderRight(); markDirty();
+    APP.toast('已撤销，恢复到「待复核」', 'ok', 1800);
+  }
+  function adoptCmp(id) {
+    var c = findCmp(id);
+    if (!c || c.status === '已采纳') return;
+    c.status = '已采纳';
+    var pid = 'p' + Date.now();
+    ST.draft.push({
+      id: pid, no: '', src: 'cmp', chapter: guessChapter(c.item), from: c.id, fromText: c.id,
+      subs: [{ id: pid + 's1', k: '（一）' + c.item, v: c.conclusion + '（' + c.aLabel + '：' + c.aVal + '；' + c.bLabel + '：' + c.bVal + '）' }]
+    });
+    ST.analyzed = true; ST.active = pid;
+    afterStruct(); markDirty();
+    renderRight();
+    APP.toast('已并入草稿：' + c.item + '（' + findP(pid).no + '）', 'ok', 2200);
+  }
+  function guessChapter(item) {
+    if (item.indexOf('有效期') >= 0 || item.indexOf('名称') >= 0) return 'ch3.2 非临床资料';
+    if (item.indexOf('规格') >= 0) return 'ch1.1 产品说明书';
+    if (item.indexOf('地址') >= 0) return 'ch2.1 概述';
+    return 'ch1.1 产品说明书';
+  }
+  function undoCmp(id) {
+    var c = findCmp(id); if (!c) return;
+    var linked = probOfSource(c.id);
+    if (linked) {
+      var i = ST.draft.indexOf(linked);
+      if (i >= 0) ST.draft.splice(i, 1);
+    }
+    c.status = '待采纳'; c.inDraft = '';
+    afterStruct(); renderRight(); markDirty();
+    APP.toast('已从草稿中移除', 'ok', 1800);
+  }
+  function adoptAllCmp() {
+    var list = ST.comps.filter(function (c) { return !c.same && c.status === '待采纳'; });
+    if (!list.length) return;
+    list.slice().forEach(function (c) { adoptCmp(c.id); });
+    APP.toast('已并入 ' + list.length + ' 条比对差异项', 'ok', 2400);
+  }
+  function runAiSum() {
+    var scopes = buildScopes();
+    if (!scopes.length) { APP.toast('请先选择至少一个分析范围', 'warn', 2000); return; }
+    var tot = scopes.reduce(function (s, x) { return s + x.stat.tot; }, 0);
+    if (!tot) { APP.toast('所选范围内没有历史案卷，无法总结', 'warn', 2200); return; }
+    APP.toast('AI 正在按 ' + scopes.length + ' 个范围分析 ' + tot + ' 份历史案卷…', 'warn', 1400);
+    setTimeout(function () {
+      ST.summed = true;
+      ST.expanded = {}; ST.expanded[scopes[0].key] = true;
+      renderHistResult();
+      var total = scopes.reduce(function (s, x) {
+        return s + x.stat.common.length + x.stat.diff.length + x.stat.missing.length;
+      }, 0);
+      APP.toast('总结完成：共 ' + total + ' 条结论可采纳（含易遗漏审评点提醒）', 'ok', 3200);
+    }, 900);
+  }
+  function showHistDetail(no) {
+    var x = DATA.HISTORY.filter(function (h) { return h.acceptNo === no; })[0];
+    if (!x) return;
+    var lis = (x.points || []).map(function (id) {
+      return '<li style="margin-bottom:7px;line-height:1.7">' + esc(SUM.pointText(id)) + '</li>';
+    }).join('');
+    APP.openDrawer({
+      title: '历史发补意见明细 · ' + x.acceptNo,
+      body: '<div class="infobar i-gray" style="margin-bottom:12px">' + ic('info', 15, 'ib-ic') +
+        '<div>仅供审评老师自查参考，<b>不作为规则、不作为强制发补依据</b>。</div></div>' +
+        '<div class="kv" style="margin-bottom:6px"><span class="k">受理号</span><b class="mono">' + esc(x.acceptNo) + '</b></div>' +
+        '<div class="kv" style="margin-bottom:6px"><span class="k">产品名称</span><b>' + esc(x.product) + '</b></div>' +
+        '<div class="kv" style="margin-bottom:6px"><span class="k">企业名称</span><b>' + esc(x.ent) + '</b></div>' +
+        '<div class="kv" style="margin-bottom:6px"><span class="k">发补时间</span><b>' + esc(x.date) + '</b></div>' +
+        '<div class="kv" style="margin-bottom:6px"><span class="k">注册类型</span><b>' + esc(x.regType) + '</b></div>' +
+        '<div class="kv" style="margin-bottom:14px"><span class="k">产品类别</span><b>' + esc(x.cat) + '</b></div>' +
+        '<div style="font-size:13px;font-weight:600;margin-bottom:7px">共 ' + (x.points || []).length + ' 条发补意见（结构化）</div>' +
+        '<ol style="padding-left:20px;font-size:13.5px;color:var(--t2)">' + lis + '</ol>' +
+        '<div class="fhint">以上为演示构造数据；正式上线应从审评系统历史案卷库实时调取。</div>',
+      foot: '<span style="font-size:12px;color:var(--t4)">案卷 ' + esc(x.acceptNo) + '</span><span style="flex:1"></span>' +
+        '<button class="btn" data-close="1">关闭</button>'
+    });
+  }
+
+  /* ================= 原文定位 ================= */
+  function locate(sec, para, quote) {
+    ST.loc = { sec: sec, para: para, quote: quote };
+    setMid('reader');
+    APP.toast('已定位到 ' + sec + ' · ' + para + '，命中内容已高亮', 'ok', 2600);
+  }
+
+  /* ================= 启动 AI 分析（待处理案卷） ================= */
+  function runAnalyze() {
+    var steps = [
+      '正在从审评系统拉取申报资料…',
+      '规则引擎校验中（比对 128 条审评规则）…',
+      '比对智能体数据同步中（说明书 / 技术要求 / 申请表）…',
+      '检索历史发补意见库（同企业 · 同产品名称）…',
+      '生成发补意见草稿…'
+    ];
+    var i = 0;
+    APP.openModal({
+      title: '启动 AI 分析', width: 'w520',
+      body: '<div id="anaBox" style="font-size:13.5px;color:var(--t2)"></div>',
+      foot: '<span class="tip">演示流程，实际由后台任务队列执行</span><span class="sp"></span><span id="anaPct"></span>',
+      after: function () {
+        var box = $('#anaBox');
+        function tick() {
+          if (i >= steps.length) {
+            ST.analyzed = true;
+            ST.draft = deepCopy(DATA.DRAFT.problems); renumber();
+            ST.rules = deepCopy(DATA.AI_RULES);
+            ST.comps = deepCopy(DATA.AI_COMPARE);
+            ST.active = ST.draft.length ? ST.draft[0].id : '';
+            ST.summed = false;
+            ST.expanded = { ent: true, product: false, cat: false, free: false };
+            APP.closeModal();
+            renderAll();
+            APP.toast('AI 分析完成：规则建议 ' + ST.rules.length + ' 条 · 比对差异 ' +
+              ST.comps.filter(function (x) { return !x.same; }).length + ' 项 · 历史参考 ' + DATA.HISTORY.length + ' 份', 'ok', 3600);
+            return;
+          }
+          box.innerHTML += '<div style="padding:5px 0">' + ic('check', 14) + ' ' + esc(steps[i]) + '</div>';
+          $('#anaPct').textContent = Math.round((i + 1) / steps.length * 100) + '%';
+          i++;
+          setTimeout(tick, 420);
+        }
+        tick();
+      }
+    });
+  }
+
+  /* ================= 保存 / 同步 ================= */
+  function doSave() {
+    ST.dirty = false; ST.dirtyIds = {};
+    $$('#midBody .ed.dirty').forEach(function (e) { e.classList.remove('dirty'); });
+    renderCasebar();
+    APP.toast('草稿已保存（共 ' + ST.draft.length + ' 个问题、' + allSubs().length + ' 个子项）', 'ok', 2200);
+  }
+  function doSync() {
+    var pend = pendingRules(), cmps = pendingCmps();
+    var warn = '';
+    if (pend || cmps) {
+      warn = '<div class="infobar i-amber">' + ic('warn', 15, 'ib-ic') +
+        '<div>仍有 <b>' + pend + '</b> 条规则 AI 建议、<b>' + cmps +
+        '</b> 条比对差异项未处理。同步后审评系统将收到当前草稿内容，未处理项不会自动补入。</div></div>';
+    }
+    var listH = ST.draft.map(function (p) {
+      return '<li style="margin-bottom:5px"><b>' + esc(p.no) + '</b>　' +
+        (p.chapter ? esc(p.chapter) : '<span style="color:var(--red)">（未填写 ch 文件名称）</span>') +
+        '　<span style="color:var(--t4)">' + p.subs.length + ' 个子项</span></li>';
+    }).join('');
+    APP.openModal({
+      title: '一键同步审评系统', width: 'w640',
+      body: warn +
+        '<div class="infobar i-blue">' + ic('info', 15, 'ib-ic') +
+        '<div>确认后，本任务状态将更新为「已同步」，草稿内容（含您的人工修改）将传输至审评系统，页面将跳转回任务列表。</div></div>' +
+        '<div style="font-size:13px;color:var(--t2);margin-bottom:7px">' +
+          '受理号 <b class="mono">' + esc(ST.caseNo) + '</b> · 本次将同步以下 <b>' + ST.draft.length + '</b> 个发补问题：</div>' +
+        '<ul style="font-size:13.5px;line-height:1.7;color:var(--t2)">' + (listH || '<li style="color:var(--t4)">草稿为空</li>') + '</ul>',
+      foot: '<span class="tip">目标系统：审评系统 · 发补意见模块</span><span class="sp"></span>' +
+        '<button class="btn" data-close="1">取消</button>' +
+        '<button class="btn primary" id="syncOk">确认同步</button>',
+      after: function (m) {
+        $('#syncOk', m).onclick = function () {
+          APP.closeModal();
+          APP.toast('正在同步至审评系统…', 'warn', 1200);
+          setTimeout(function () {
+            if (window.parent && window.parent !== window) {
+              window.parent.postMessage({ __fb: 'synced', caseNo: ST.caseNo }, '*');
+              return;
+            }
+            location.href = './01-任务列表.html?sync=' + encodeURIComponent(ST.caseNo);
+          }, 800);
+        };
+      }
+    });
+  }
+
+  /* ================= 全量渲染 ================= */
+  function renderAll() {
+    renderCasebar();
+    renderOutline();
+    setMid();
+    renderRight();
+  }
+
+  loadCase();
+  renderAll();
+
+  /* ---- 承接「历史发补分析」的采纳：URL 参数或父页消息都能触发 ---- */
+  function applyHistoryAdopt(adoptStr, label) {
+    var items = String(adoptStr || '').split(',').map(function (s) {
+      var p = s.split(':');
+      return { pid: p[0], n: parseInt(p[1] || '0', 10) || 0, tot: parseInt(p[2] || '0', 10) || 0 };
+    }).filter(function (x) { return !!x.pid; });
+    if (!items.length) return 0;
+    ST.analyzed = true;
+    var added = 0;
+    items.forEach(function (it) {
+      if (adoptByPoint(it.pid, it.n, it.tot, label || 'AI 总结分析', { silent: true })) added++;
+    });
+    renumber(); renderOutline(); setMid(); renderCasebar(); markDirty();
+    var el = $('#prob-' + ST.active);
+    if (el) { var c = $('#midBody'); c.scrollTop = Math.max(0, el.offsetTop - c.offsetTop - 8); }
+    if (added) {
+      APP.toast('已采纳 ' + added + ' 条历史发补 AI 结论并写入草稿（标记为人工已认可）', 'ok', 4200);
+    } else {
+      APP.toast('所选 AI 结论均已在草稿中，未重复添加', 'warn', 2600);
+    }
+    return added;
+  }
+  (function handleAdoptFromUrl() {
+    var mA = /[?&]adopt=([^&]+)/.exec(location.search);
+    if (!mA) return;
+    var mL = /[?&]scopeLabel=([^&]+)/.exec(location.search);
+    applyHistoryAdopt(decodeURIComponent(mA[1]), mL ? decodeURIComponent(mL[1]) : 'AI 总结分析');
+  })();
+
+  /* ---------------- 模块一键弹出 / 嵌入模式 ---------------- */
+  var EMBED = (function () {
+    var m = /[?&]embed=(left|mid|right)/.exec(location.search);
+    return m ? m[1] : '';
+  })();
+  function applyEmbed() {
+    if (!EMBED) return;
+    document.body.classList.add('embed', 'embed-' + EMBED);
+    if (/[?&]float=1/.test(location.search)) document.body.classList.add('float-mode');
+  }
+  applyEmbed();
+  if (/[?&]tab=1/.test(location.search)) document.body.classList.add('tab-mode');
+
+  function popModule(kind) {
+    var map = {
+      left: { el: $('#probListCard'), t: '问题清单' },
+      mid: { el: $('#draftCard'), t: '发补意见草稿' },
+      right: { el: $('#auxCard'), t: '智能辅助 · 三类来源' }
+    };
+    var c = map[kind];
+    if (!c || !c.el) return;
+    /* 始终在本页把模块搬进浮窗：跨 iframe 另开实例会导致点问题清单时中间草稿不联动 */
+    if (POPPED.indexOf(kind) >= 0) {
+      APP.toast('「' + c.t + '」已在浮窗中，可直接拖动或点分屏', 'info', 2200);
+      return;
+    }
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var top = 62, h = Math.max(300, vh - top - 12);
+    var idx = POPPED.length;
+    var w = Math.round(vw * (idx < 2 ? 0.5 : 0.62)) - 12;
+    var left = idx === 0 ? 8 : (idx === 1 ? Math.round(vw / 2 + 4) : Math.round((vw - w) / 2));
+    POPPED.push(kind);
+    APP.openFloat({
+      el: c.el, title: c.t, sub: (ST.caseNo || '') + ' · ' + ((ST.case && ST.case.product) || ''),
+      width: w, height: h, left: left, top: top,
+      onClose: function () { POPPED = POPPED.filter(function (k) { return k !== kind; }); }
+    });
+    APP.toast('已弹出「' + c.t + '」：点问题清单会同步刷新草稿与辅助栏', 'ok', 2600);
+  }
+  var POPPED = [];
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-pop]');
+    if (!b) return;
+    e.preventDefault();
+    popModule(b.dataset.pop);
+  });
+
+  /* ---------------- 接收规则校验的「采纳」：按 ch 文件名归并 ---------------- */
+  function applyRuleAdopt(p) {
+    if (!p || !p.conclusion) return null;
+    var ch = String(p.ch || '').trim();
+    var text = p.conclusion + (p.remark ? '\n备注：' + p.remark : '');
+    var target = ST.draft.filter(function (x) { return String(x.chapter || '').trim() === ch; })[0];
+    var res;
+    if (target) {
+      target.subs.push({ id: target.id + 's' + Date.now(), k: p.name || '问题点', v: text });
+      ST.active = target.id;
+      res = { merged: true, pid: target.id, no: target.no, subs: target.subs.length };
+    } else {
+      var pid = 'p' + Date.now();
+      ST.draft.push({
+        id: pid, no: '', src: 'rule', chapter: ch, from: p.ruleId || '', fromText: p.ruleId || '',
+        subs: [{ id: pid + 's1', k: p.name || '问题点', v: text }]
+      });
+      ST.active = pid;
+      res = { merged: false, pid: pid, no: '', subs: 1 };
+    }
+    ST.analyzed = true;
+    renumber();
+    renderOutline();
+    setMid('draft');
+    renderCasebar();
+    markDirty();
+    if (target) res.no = target.no;
+    else {
+      var np = findP(ST.active); res.no = np ? np.no : '';
+    }
+    APP.toast((res.merged ? '已归入 ' + res.no + '（' + ch + '）并新增 1 个子项' :
+      '已在问题清单新增 ' + res.no + '（' + (ch || '未命名 ch 文件') + '）'), 'ok', 3400);
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage({ __fb: 'adoptResult', result: res, name: p.name, ch: ch }, '*');
+    }
+    return res;
+  }
+
+  window.addEventListener('message', function (e) {
+    var d = e.data || {};
+    if (d.__fb === 'adoptRule' && d.payload) applyRuleAdopt(d.payload);
+    if (d.__fb === 'adoptHistory' && d.adopt) applyHistoryAdopt(d.adopt, d.scopeLabel || 'AI 总结分析');
+  });
+
+  /* 独立打开时，消费规则页写入本机队列的采纳记录 */
+  try {
+    var q = JSON.parse(sessionStorage.getItem('fb_adopt_queue') || '[]');
+    if (q.length) {
+      sessionStorage.removeItem('fb_adopt_queue');
+      q.forEach(function (p) { applyRuleAdopt(p); });
+    }
+  } catch (err) {}
+
+  /* 草稿内的「规则依据」链接：嵌入工作台时改为切 tab 并选中规则 */
+  document.addEventListener('click', function (e) {
+    var a = e.target.closest('.trace');
+    if (!a || window.parent === window) return;
+    var href = a.getAttribute('href') || '';
+    var m = /rid=([^&]+)/.exec(href);
+    if (m && href.indexOf('05-') >= 0) {
+      e.preventDefault();
+      window.parent.postMessage({ __fb: 'goto', tab: 'rules', rid: decodeURIComponent(m[1]) }, '*');
+    }
+  });
+
+  window.__PROTO = {
+    ST: ST, setMid: setMid, locate: locate, adoptRule: adoptRule, adoptCmp: adoptCmp,
+    runAiSum: runAiSum, renderAll: renderAll, freeFiltered: freeFiltered, buildScopes: buildScopes,
+    focusProblem: focusProblem, addBlank: addBlank, delProb: delProb, linkOf: linkOf,
+    computeSum: SUM.computeSum, buildScopes: buildScopes, adoptAi: adoptAi, adoptByPoint: adoptByPoint,
+    togglePreset: togglePreset, coveredPoints: coveredPoints, adoptedMap: adoptedMap, applyRuleAdopt: applyRuleAdopt
+  };
+})();
+</script>
+</body>
+</html>

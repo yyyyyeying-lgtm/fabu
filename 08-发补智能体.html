@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>发补智能体 · 规则校验与发补意见草稿 · 原型 v18</title>
+<link rel="stylesheet" href="./assets/style.css">
+</head>
+<body class="fit">
+<div class="shell">
+  <header class="topbar" id="topbar"></header>
+  <aside class="side" id="side"></aside>
+
+  <main class="content">
+    <div class="page-head">
+      <div>
+        <div class="page-title"><span class="dot"></span>发补智能体</div>
+      </div>
+      <div class="right">
+        <a class="btn" href="./01-任务列表.html">← 返回任务列表</a>
+        <a class="btn" id="btnCompare">进入比对智能体</a>
+        <button class="btn primary" id="btnDraftTab">查看发补意见草稿</button>
+      </div>
+    </div>
+
+    <div class="casebar" id="casebar"></div>
+
+    <div class="wbtabs" id="wbtabs">
+      <div class="wbtab on" data-tab="rules"><span>规则校验</span><span class="n" id="nRules">12</span><span class="dot" id="dRules"></span></div>
+      <div class="wbtab" data-tab="hist"><span>历史发补分析</span></div>
+      <div class="wbtab" data-tab="draft"><span>发补意见草稿</span><span class="n" id="nDraft">4</span></div>
+      <span class="sp"></span>
+      <span class="hint">规则复核 → 历史参考 → 草稿成文</span>
+    </div>
+
+    <div class="wbpane on" id="pane-rules">
+      <iframe id="frameRules" title="规则校验"></iframe>
+    </div>
+
+    <div class="wbpane" id="pane-hist">
+      <iframe id="frameHist" title="历史发补分析"></iframe>
+    </div>
+
+    <div class="wbpane" id="pane-draft">
+      <iframe id="frameDraft" title="发补意见草稿"></iframe>
+    </div>
+  </main>
+</div>
+
+<div id="toastBox"></div>
+
+<script src="./assets/app.js"></script>
+<script src="./assets/data.js"></script>
+<script>
+(function () {
+  'use strict';
+  var $ = APP.$, $$ = APP.$$, esc = APP.esc, ic = APP.ic;
+  function qs(k) {
+    var m = new RegExp('[?&]' + k + '=([^&]*)').exec(location.search);
+    return m ? decodeURIComponent(m[1]) : '';
+  }
+
+  /* 案卷上下文：?case= → 上次打开的案卷 → 第一个案卷 */
+  var LS_CASE = 'fb_v12_case';
+  var wantNo = qs('case');
+  if (!wantNo) { try { wantNo = localStorage.getItem(LS_CASE) || ''; } catch (e) {} }
+  var CASE = DATA.CASES.filter(function (c) { return c.acceptNo === wantNo; })[0] ||
+    DATA.CASES.filter(function (c) { return c.acceptNo === 'CQX2600312'; })[0] || DATA.CASES[0];
+  try { localStorage.setItem(LS_CASE, CASE.acceptNo); } catch (e) {}
+
+  APP.renderTop({ crumb: ['审评工作台', '发补智能体'] });
+  APP.renderSide('fb');
+  document.body.classList.add('fit');
+
+  var ST = {
+    tab: 'rules',
+    queues: { rules: [], draft: [], hist: [] },
+    ready: { rules: false, draft: false, hist: false },
+    draftCount: 0,
+    pendingAdopt: null
+  };
+
+  /* 从 URL 带下来的深链参数：rid 定位规则；adopt 直接采纳历史发补结论 */
+  var RID = qs('rid');
+  var ADOPT = qs('adopt');
+  var SCOPE = qs('scopeLabel');
+
+  var st = DATA.STATUS[CASE.status] || DATA.STATUS['待复核'];
+  $('#casebar').innerHTML =
+    '<div class="cb-main">' +
+      '<div class="cb-name">' + esc(CASE.product) +
+        '<span class="badge ' + (st.tone || 'b-gray') + '"><span class="bd"></span>' + esc(CASE.status) + '</span>' +
+        '<span class="pid">' + esc(CASE.acceptNo) + '</span></div>' +
+      '<div class="cb-meta">' +
+        '<span>申请人 <b>' + esc(CASE.ent) + '</b></span>' +
+        '<span>器械品类 <b>' + esc((CASE.devCat || []).slice(1, 3).join(' › ') || CASE.cat) + '</b></span>' +
+        '<span>申请类型 <b>' + esc(CASE.applyType || '—') + '</b></span>' +
+        '<span>产品类别 <b>' + esc(CASE.productClass || '—') + ' · ' + esc(CASE.region || '—') + '</b></span>' +
+        '<span>审评员 <b>' + esc(CASE.reviewer || '—') + '</b></span>' +
+      '</div>' +
+    '</div>';
+  $('#btnCompare').href = './07-比对智能体.html?case=' + encodeURIComponent(CASE.acceptNo);
+
+  /* ---------------- Tab 与 iframe ---------------- */
+  function ensureFrame(tab) {
+    if (tab === 'hist' && !ST.ready.hist) {
+      var fh = $('#frameHist');
+      fh.src = './03-历史发补-AI总结.html?case=' + encodeURIComponent(CASE.acceptNo) + '&tab=1';
+      fh.onload = function () {
+        ST.ready.hist = true;
+        (ST.queues.hist || []).splice(0).forEach(function (m) { fh.contentWindow.postMessage(m, '*'); });
+      };
+    }
+    if (tab === 'rules' && !ST.ready.rules) {
+      var fr = $('#frameRules');
+      fr.src = './05-规则校验.html?case=' + encodeURIComponent(CASE.acceptNo) + '&tab=1' +
+        (RID ? '&rid=' + encodeURIComponent(RID) : '');
+      fr.onload = function () {
+        ST.ready.rules = true;
+        ST.queues.rules.splice(0).forEach(function (m) { fr.contentWindow.postMessage(m, '*'); });
+      };
+    }
+    if (tab === 'draft' && !ST.ready.draft) {
+      var fd = $('#frameDraft');
+      var ad = ADOPT || (ST.pendingAdopt && ST.pendingAdopt.adopt) || '';
+      var sp = SCOPE || (ST.pendingAdopt && ST.pendingAdopt.scope) || '';
+      fd.src = './02-发补意见草稿.html?case=' + encodeURIComponent(CASE.acceptNo) + '&tab=1' +
+        (ad ? '&adopt=' + encodeURIComponent(ad) : '') +
+        (sp ? '&scopeLabel=' + encodeURIComponent(sp) : '');
+      fd.onload = function () {
+        ST.ready.draft = true;
+        ST.queues.draft.splice(0).forEach(function (m) { fd.contentWindow.postMessage(m, '*'); });
+      };
+    }
+  }
+  function setTab(tab) {
+    ST.tab = (tab === 'draft' || tab === 'hist') ? tab : 'rules';
+    $$('#wbtabs .wbtab').forEach(function (t) { t.classList.toggle('on', t.dataset.tab === ST.tab); });
+    $$('.wbpane').forEach(function (p) { p.classList.toggle('on', p.id === 'pane-' + ST.tab); });
+    ensureFrame(ST.tab);
+    try {
+      history.replaceState(null, '', location.pathname + '?case=' + encodeURIComponent(CASE.acceptNo) + '&tab=' + ST.tab);
+    } catch (e) {}
+  }
+  $('#wbtabs').addEventListener('click', function (e) {
+    var t = e.target.closest('.wbtab');
+    if (t) setTab(t.dataset.tab);
+  });
+  $('#btnDraftTab').onclick = function () { setTab('draft'); };
+
+  /* ---------------- 与两个 Tab 的消息互通 ---------------- */
+  window.addEventListener('message', function (e) {
+    var d = e.data || {};
+    if (d.__fb === 'float' && d.src) {
+      APP.openFloat({ title: d.title || '模块', sub: d.sub || '', src: d.src,
+        width: d.width || 860, height: d.height || 660 });
+      return;
+    }
+    if (d.__fb === 'ruleState' && d.stats) {
+      if (d.stats.wait != null) $('#nRules').textContent = d.stats.wait;
+      return;
+    }
+    if (d.__fb === 'histAdopt' && d.adopt) {
+      ST.pendingAdopt = { adopt: d.adopt, scope: d.scopeLabel || '' };
+      if (ST.ready.draft) {
+        $('#frameDraft').contentWindow.postMessage(
+          { __fb: 'adoptHistory', adopt: d.adopt, scopeLabel: d.scopeLabel || '' }, '*');
+      }
+      setTab('draft');
+      return;
+    }
+    if (d.__fb === 'adoptRule' && d.payload) {
+      if (ST.ready.draft) $('#frameDraft').contentWindow.postMessage({ __fb: 'adoptRule', payload: d.payload }, '*');
+      else ST.queues.draft.push({ __fb: 'adoptRule', payload: d.payload });
+      var nr = parseInt($('#nRules').textContent, 10) || 0;
+      if (nr > 0) $('#nRules').textContent = nr - 1;
+      APP.toast('已采纳，正在按 ch 文件名写入发补意见草稿…', 'ok', 2200);
+      return;
+    }
+    if (d.__fb === 'adoptResult') {
+      var r = d.result || {};
+      if (!r.merged) {
+        ST.draftCount++;
+        $('#nDraft').textContent = 4 + ST.draftCount;
+      }
+      APP.toast('已写入草稿：' + (r.no || '新问题') + (r.merged ? '（新增子项）' : '（新增问题）') +
+        ' · ' + (d.ch || ''), 'ok', 3200);
+      return;
+    }
+    if (d.__fb === 'synced') {
+      APP.toast('发补意见已同步至审评系统，正在返回任务列表…', 'ok', 2000);
+      setTimeout(function () {
+        location.href = './01-任务列表.html?sync=' + encodeURIComponent(d.caseNo || CASE.acceptNo);
+      }, 700);
+      return;
+    }
+    if (d.__fb === 'goto') {
+      /* 比对智能体没有 Tab，整页跳到比对页并定位该条差异 */
+      if (d.tab === 'compare' && d.diff) {
+        location.href = './07-比对智能体.html?case=' + encodeURIComponent(CASE.acceptNo) +
+          '&diff=' + encodeURIComponent(d.diff);
+        return;
+      }
+      setTab(d.tab || 'rules');
+      if (d.rid) {
+        var msg = { __fb: 'selectRule', rid: d.rid };
+        if (ST.ready.rules) $('#frameRules').contentWindow.postMessage(msg, '*');
+        else ST.queues.rules.push(msg);
+      }
+      if (d.pt) {
+        var msg2 = { __fb: 'focusPoint', pt: d.pt };
+        if (ST.ready.hist) $('#frameHist').contentWindow.postMessage(msg2, '*');
+        else (ST.queues.hist = ST.queues.hist || []).push(msg2);
+      }
+    }
+  });
+
+  /* ---------------- 启动 ---------------- */
+  try {
+    var pend = (DATA.RULES || []).filter(function (r) { return r.status === '待复核'; }).length;
+    if (pend) $('#nRules').textContent = pend;
+  } catch (e) {}
+  var bootTab = qs('tab');
+  setTab(ADOPT ? 'draft' : (bootTab === 'draft' || bootTab === 'hist' ? bootTab : 'rules'));
+
+  window.__FB = { ST: ST, setTab: setTab, CASE: CASE };
+})();
+</script>
+</body>
+</html>

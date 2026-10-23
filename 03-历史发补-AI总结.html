@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>历史发补分析 · 发补智能体原型 v18</title>
+<link rel="stylesheet" href="./assets/style.css">
+</head>
+<body>
+<div class="shell">
+  <header class="topbar" id="topbar"></header>
+  <aside class="side" id="side"></aside>
+
+  <main class="content">
+    <div class="page-head">
+      <div>
+        <div class="page-title"><span class="dot"></span>历史发补分析</div>
+        <div class="page-sub">
+          共用工具：既能<b>空手进来自由查询</b>，也能<b>从某个案卷携带属性进来</b>。进入页面默认展示「同企业」「同产品名称」两个维度的 AI 分析；
+          不满意可自行组合筛选条件，再按筛选结果生成分析。每条结论均可<b>一键采纳</b>进该案卷的发补意见草稿箱。
+        </div>
+      </div>
+      <div class="right">
+        <a class="btn" href="./01-任务列表.html">← 返回任务列表</a>
+      </div>
+    </div>
+
+    <!-- ① AI 分析（置顶） -->
+    <div class="panel">
+      <div class="panel-head">
+        <h3><span class="sect-t" style="margin:0"><span class="n">1</span>AI 分析</span></h3>
+        <span class="sub">按维度分块输出：高频共性问题 / 差异需关注问题 / 易遗漏审评点提醒</span>
+        <div class="right"><span class="tag t-gray" id="aiMeta">—</span></div>
+      </div>
+      <div class="panel-body" id="aiBody"></div>
+    </div>
+
+    <!-- ② 筛选条件（居中） -->
+    <div class="panel">
+      <div class="panel-head">
+        <h3><span class="sect-t" style="margin:0"><span class="n">2</span>筛选条件</span></h3>
+        <span class="sub">对上方分析不满意时，自行组合条件缩小范围</span>
+        <div class="right"><span class="tag t-blue" id="filterHit">未筛选</span></div>
+      </div>
+      <div class="panel-body">
+        <div id="filterBox"></div>
+        <div class="toolbar" style="margin-top:14px;padding-top:13px;border-top:1px solid var(--bd2)">
+          <button class="btn primary" id="btnQuery">查询</button>
+          <button class="btn" id="btnReset">重置条件</button>
+          <button class="btn" id="btnAnalyzeFilter">按当前筛选条件生成 AI 分析</button>
+          <span class="sp"></span>
+          <span style="font-size:12px;color:var(--t4)">查询只更新下方案卷清单；勾选后点「按当前筛选条件生成 AI 分析」，<b>只有勾选的案卷</b>会参与分析</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ③ 案卷查询结果（置底） -->
+    <div class="panel" style="margin-bottom:0">
+      <div class="panel-head">
+        <h3><span class="sect-t" style="margin:0"><span class="n">3</span>案卷查询结果</span></h3>
+        <span class="sub" id="listSub"></span>
+        <div class="right">
+          <span class="selinfo" id="listSel">已选 0 / 0</span>
+          <button class="btn xs" id="selAll" title="勾选全部查询结果">全选</button>
+          <button class="btn xs" id="selNone" title="清空勾选">清空</button>
+          <span class="tag t-gray" id="listMode">默认维度范围</span>
+        </div>
+      </div>
+      <div class="tbl-wrap">
+        <table class="tbl" style="min-width:1368px">
+          <thead>
+            <tr>
+              <th class="ckcell" style="width:36px"><input type="checkbox" id="hAll" title="全选 / 取消全选当前页"></th>
+              <th style="width:108px">受理号</th>
+              <th style="width:158px">产品名称</th>
+              <th style="width:166px">申请人</th>
+              <th style="width:184px">器械品类</th>
+              <th style="width:68px">申请类型</th>
+              <th style="width:158px">申请事项</th>
+              <th style="width:72px">产品类别</th>
+              <th style="width:58px">地域</th>
+              <th style="width:104px">当前状态</th>
+              <th style="width:138px">发补时间</th>
+              <th style="width:72px">操作</th>
+            </tr>
+          </thead>
+          <tbody id="hrows"></tbody>
+        </table>
+      </div>
+      <div class="pager" id="pager"></div>
+    </div>
+
+    <div class="infobar i-amber" style="margin:14px 0 0">
+      <span style="flex:0 0 16px;margin-top:2px">!</span>
+      <div><b>关于演示数据：</b>历史案卷、申请人、产品、发补意见均为<b>演示构造数据</b>。
+      「高频共性问题 / 差异需关注问题 / 易遗漏审评点提醒」及每条的占比，<b>全部由当前维度的案卷范围实时计算</b>：
+      同一问题点在 ≥2 份案卷出现计入高频；仅 1 份且与本产品直接相关计入差异项；
+      范围内出现过但当前草稿尚未覆盖的，计入易遗漏审评点提醒。历史发补意见仅用于自查、查漏补缺，
+      <b>不构成规则，不作为强制发补依据</b>。</div>
+    </div>
+  </main>
+</div>
+
+<datalist id="dlApplicant"></datalist>
+<div id="toastBox"></div>
+
+<script src="./assets/app.js"></script>
+<script src="./assets/data.js"></script>
+<script src="./assets/sum.js"></script>
+<script src="./assets/cascade.js"></script>
+<script>
+(function () {
+  'use strict';
+  var $ = APP.$, $$ = APP.$$, esc = APP.esc, ic = APP.ic;
+
+  var BADGE = { ent: 'A', product: 'B', cat: 'C', custom: 'D' };
+  var DIMNAME = { ent: '同企业', product: '同产品名称完全一致', cat: '同分类目录 · 相似产品', custom: '按当前筛选条件' };
+
+  var S = {
+    caseNo: '', cur: null,
+    dims: { ent: true, product: true, cat: false },
+    dimExpanded: { ent: true, product: true, cat: true, custom: true },
+    customList: null,
+    filters: {
+      applicant: '', product: '', devCat: [],
+      applyType: [], applyItem: [], productClass: [], region: [],
+      status: '', from: '', to: ''
+    },
+    results: [], mode: 'dims', queried: false,
+    checked: {}, customLabel: '', customDesc: '',
+    page: 1, size: 10,
+    ctrl: {}
+  };
+
+  APP.renderTop({ crumb: ['审评工作台', '发补智能体', '历史发补分析'] });
+  APP.renderSide('fb');
+
+  /* 被「发补智能体」以 Tab iframe 嵌入：隐藏自己的顶栏侧栏，页面整体可滚动 */
+  var IN_FRAME = !!(window.parent && window.parent !== window);
+  if (/[?&]tab=1/.test(location.search)) document.body.classList.add('tab-mode', 'tab-scroll');
+
+  /* ---------- 载入采纳目标案卷 ---------- */
+  (function initCase() {
+    var m = /[?&]case=([^&]+)/.exec(location.search);
+    var no = m ? decodeURIComponent(m[1]) : '';
+    var c = DATA.CASES.filter(function (x) { return x.acceptNo === no; })[0];
+    if (!c) c = DATA.CASES.filter(function (x) { return x.acceptNo === 'CQX2600312'; })[0];
+    S.cur = c; S.caseNo = c.acceptNo;
+  })();
+
+  /* ================= ② 筛选条件 ================= */
+  function chipGroup(field, options) {
+    return '<div class="vchips" data-fcls="' + field + '">' + options.map(function (o) {
+      var on = S.filters[field].indexOf(o) >= 0;
+      return '<span class="vchip' + (on ? ' on' : '') + '" data-fv="' + esc(o) + '">' + esc(o) + '</span>';
+    }).join('') + '</div>';
+  }
+  function fItem(label, inner, tip) {
+    return '<div class="fitem"><label>' + esc(label) + '</label>' + inner +
+      (tip ? '<span class="tips">' + esc(tip) + '</span>' : '') + '</div>';
+  }
+
+  function renderFilters() {
+    var ents = [];
+    DATA.HISTORY.forEach(function (x) { if (ents.indexOf(x.ent) < 0) ents.push(x.ent); });
+    $('#dlApplicant').innerHTML = ents.map(function (e) { return '<option value="' + esc(e) + '">'; }).join('');
+
+    var h = '<div class="fgrid">';
+    h += fItem('申请人',
+      '<input class="inp" id="fApplicant" list="dlApplicant" autocomplete="off" placeholder="输入关键字模糊搜索" value="' + esc(S.filters.applicant) + '">');
+    h += fItem('产品名称',
+      '<input class="inp" id="fProduct" autocomplete="off" placeholder="输入关键字模糊搜索" value="' + esc(S.filters.product) + '">');
+    h += fItem('器械品类', '<div id="fDevCat"></div>', '四级联动，支持模糊搜索');
+    h += fItem('申请类型', '<div id="fApplyType"></div>', '可多选');
+    h += fItem('申请事项', '<div id="fApplyItem"></div>', '可多选');
+    h += fItem('产品类别', chipGroup('productClass', DATA.ENUM.productClass));
+    h += fItem('地域', chipGroup('region', DATA.ENUM.region));
+    h += fItem('当前状态',
+      '<select class="sel" id="fStatus"><option value="">全部</option>' +
+      DATA.ENUM.reviewStatus.map(function (v) {
+        return '<option' + (S.filters.status === v ? ' selected' : '') + '>' + esc(v) + '</option>';
+      }).join('') + '</select>');
+    h += '<div class="fitem" style="grid-column:span 2"><label>发补时间<span class="k">年月日区间</span></label>' +
+      '<div class="drange" id="dRange">' +
+        '<span class="dri">' + ic('clock', 13) + '</span>' +
+        '<input type="date" id="fFrom" value="' + esc((S.filters.from || '').slice(0, 10)) + '" aria-label="开始日期">' +
+        '<span class="dsep">至</span>' +
+        '<input type="date" id="fTo" value="' + esc((S.filters.to || '').slice(0, 10)) + '" aria-label="结束日期">' +
+        '<button type="button" class="dclr" id="dClear" title="清除时间区间">×</button>' +
+      '</div></div>';
+    h += '</div>';
+    $('#filterBox').innerHTML = h;
+
+    /* 两个复杂控件：四级联动品类 / 多选下拉 */
+    S.ctrl.devCat = CASCADE.create($('#fDevCat'), {
+      tree: DATA.DEVICE_CAT,
+      value: S.filters.devCat,
+      placeholder: '请选择或输入关键字搜索（如「输液器」）',
+      onChange: function (v) { S.filters.devCat = v; }
+    });
+    var dc = $('#dClear');
+    if (dc) dc.onclick = function () {
+      var a = $('#fFrom'), b = $('#fTo');
+      if (a) a.value = ''; if (b) b.value = '';
+      S.filters.from = ''; S.filters.to = '';
+      APP.toast('已清除发补时间区间', 'ok', 1600);
+    };
+    S.ctrl.applyType = CASCADE.multi($('#fApplyType'), {
+      options: DATA.ENUM.applyType, value: S.filters.applyType,
+      onChange: function (v) { S.filters.applyType = v; }
+    });
+    S.ctrl.applyItem = CASCADE.multi($('#fApplyItem'), {
+      options: DATA.ENUM.applyItem, value: S.filters.applyItem,
+      onChange: function (v) { S.filters.applyItem = v; }
+    });
+
+    /* 产品类别 / 地域：chip 多选 */
+    $$('#filterBox [data-fcls]').forEach(function (g) {
+      g.addEventListener('click', function (e) {
+        var c = e.target.closest('[data-fv]');
+        if (!c) return;
+        var f = g.dataset.fcls, v = c.dataset.fv;
+        var arr = S.filters[f];
+        var i = arr.indexOf(v);
+        if (i >= 0) arr.splice(i, 1); else arr.push(v);
+        c.classList.toggle('on', arr.indexOf(v) >= 0);
+      });
+    });
+  }
+
+  function readFilters() {
+    var a = $('#fApplicant'), p = $('#fProduct'), st = $('#fStatus'), f1 = $('#fFrom'), f2 = $('#fTo');
+    if (a) S.filters.applicant = a.value.trim();
+    if (p) S.filters.product = p.value.trim();
+    if (st) S.filters.status = st.value;
+    if (f1) S.filters.from = f1.value;
+    if (f2) S.filters.to = f2.value;
+    return S.filters;
+  }
+
+  /* 发补时间：datetime-local 可能只到日/分，统一补齐后再比字符串 */
+  function normFrom(v) {
+    if (!v) return '';
+    if (v.length === 10) return v + ' 00:00:00';
+    if (v.length === 16) return v.replace('T', ' ') + ':00';
+    return v.replace('T', ' ');
+  }
+  function normTo(v, isEnd) {
+    if (!v) return '';
+    if (v.length === 10) return v + (isEnd ? ' 23:59:59' : ' 00:00:00');
+    if (v.length === 16) return v.replace('T', ' ') + (isEnd ? ':59' : ':00');
+    return v.replace('T', ' ');
+  }
+  function matchCat(x, path) {
+    for (var i = 0; i < path.length; i++) {
+      if (!path[i]) continue;
+      if (!x.devCat || x.devCat[i] !== path[i]) return false;
+    }
+    return true;
+  }
+
+  function filterList() {
+    var f = S.filters;
+    var ap = f.applicant.toLowerCase(), pd = f.product.toLowerCase();
+    var from = normFrom(f.from), to = normTo(f.to, true);
+    return DATA.HISTORY.filter(function (x) {
+      if (ap && x.ent.toLowerCase().indexOf(ap) < 0) return false;
+      if (pd && x.product.toLowerCase().indexOf(pd) < 0) return false;
+      if (f.devCat.length && !matchCat(x, f.devCat)) return false;
+      if (f.applyType.length && f.applyType.indexOf(x.applyType) < 0) return false;
+      if (f.applyItem.length && f.applyItem.indexOf(x.applyItem) < 0) return false;
+      if (f.productClass.length && f.productClass.indexOf(x.productClass) < 0) return false;
+      if (f.region.length && f.region.indexOf(x.region) < 0) return false;
+      if (f.status && x.reviewStatus !== f.status) return false;
+      if (from && x.issueAt < from) return false;
+      if (to && x.issueAt > to) return false;
+      return true;
+    });
+  }
+
+  function describeFilters() {
+    var f = S.filters, a = [];
+    if (f.applicant) a.push('申请人含「' + f.applicant + '」');
+    if (f.product) a.push('产品名含「' + f.product + '」');
+    if (f.devCat.length) a.push('品类：' + f.devCat.filter(Boolean).join(' › '));
+    if (f.applyType.length) a.push('申请类型：' + f.applyType.join('、'));
+    if (f.applyItem.length) a.push('申请事项：' + f.applyItem.join('、'));
+    if (f.productClass.length) a.push('类别：' + f.productClass.join('、'));
+    if (f.region.length) a.push('地域：' + f.region.join('、'));
+    if (f.status) a.push('状态：' + f.status);
+    if (f.from || f.to) a.push('发补时间 ' + (normFrom(f.from) || '不限') + ' ~ ' + (normTo(f.to, true) || '不限'));
+    return a.length ? a.join('；') : '未设置筛选条件（全部历史案卷）';
+  }
+
+  /* ================= ① AI 分析 ================= */
+  function dimList(key) {
+    if (!S.cur) return [];
+    var sp = SUM.scopePresets(S.cur).filter(function (x) { return x.key === key; })[0];
+    return sp ? DATA.HISTORY.filter(sp.match) : [];
+  }
+  function buildDims() {
+    var out = [];
+    if (S.cur) {
+      SUM.scopePresets(S.cur).forEach(function (sp) {
+        if (!S.dims[sp.key]) return;
+        out.push({
+          key: sp.key, label: sp.label, sub: sp.sub, badge: BADGE[sp.key],
+          list: DATA.HISTORY.filter(sp.match)
+        });
+      });
+    }
+    if (S.customList) {
+      out.push({
+        key: 'custom', label: S.customLabel || '按当前筛选条件',
+        sub: S.customDesc || describeFilters(), badge: 'D', list: S.customList
+      });
+    }
+    var covered = (S.cur && S.cur.covered) || [];
+    out.forEach(function (sc) { sc.stat = SUM.conclusionsFor(sc.list, S.cur, covered); });
+    return out;
+  }
+
+  function renderAI() {
+    var scopes = buildDims();
+    var chips = [];
+    if (S.cur) {
+      SUM.scopePresets(S.cur).forEach(function (sp) {
+        chips.push({ k: sp.key, t: sp.label.replace(' · 相似产品', ''), n: DATA.HISTORY.filter(sp.match).length });
+      });
+    }
+    if (S.customList) chips.push({ k: 'custom', t: S.customLabel ? '勾选范围' : '按筛选条件', n: S.customList.length });
+
+    var h = '<div class="aihead">' +
+      '<div class="ttl">' + ic('spark', 16) + ' 维度分析</div>' +
+      '<div class="dimchips">' + chips.map(function (c) {
+        var on = c.k === 'custom' ? true : !!S.dims[c.k];
+        return '<span class="dimchip' + (on ? ' on' : '') + '" data-dim="' + c.k + '">' +
+          esc(c.t) + ' <b>' + c.n + '</b></span>';
+      }).join('') + '</div>' +
+      '<div class="right">' +
+        '<button class="btn sm" id="btnRefreshAI">' + ic('sync', 13) + ' 重新生成</button>' +
+      '</div></div>';
+
+    if (S.cur) {
+      var cat3 = (S.cur.devCat || []).filter(Boolean);
+      h += '<div class="aibasis">' + ic('spark', 13, 'ab-i') +
+        '<span>以下结论由 <b>当前案卷基础信息</b> 自动推导：</span>' +
+        '<span>同申请人 <b>' + esc(S.cur.ent || '—') + '</b> 的全部历史发补意见</span>' +
+        '<span>同产品名称 <b>' + esc(S.cur.product || '—') + '</b> 的完全一致案卷</span>' +
+        '<span>品类 <b>' + esc(cat3[2] || cat3[cat3.length - 1] || '—') + '</b></span>' +
+      '</div>';
+    }
+
+    if (!S.cur && !S.customList) {
+      h += '<div class="ph"><div class="phi">' + ic('spark', 19) + '</div>' +
+        '<div class="pht">尚未指定采纳目标案卷</div>' +
+        '<div class="phs">「同企业 / 同产品名称 / 同分类目录」三个维度需要案卷属性才能推导。<br>' +
+        '请在上方选择目标案卷，或在下方自行组合筛选条件后点「按当前筛选条件生成 AI 分析」。</div></div>';
+    } else if (!scopes.length) {
+      h += '<div class="ph"><div class="phi">' + ic('filter', 19) + '</div>' +
+        '<div class="pht">未选择任何维度</div><div class="phs">请点选上方的维度标签。</div></div>';
+    } else {
+      scopes.forEach(function (sc) {
+        h += SUM.renderScopeRows(sc, {
+          badge: sc.badge,
+          collapsible: true,
+          collapsed: !S.dimExpanded[sc.key],
+          batchAdopt: !!S.cur,
+          selfCheck: true,
+          canAdopt: !!S.cur,
+          scope: sc.key
+        });
+      });
+      h += '<div class="scalenote" style="margin-top:2px">' + ic('info', 13) +
+        '<div><b>关于采纳：</b>每条结论右侧的「一键采纳」会把<b>参照话术 + 结论文据</b>写入案卷 <b>' +
+        (S.cur ? esc(S.cur.acceptNo) : '（未指定）') + '</b> 的发补意见草稿箱，并标记为「人工已认可」，无需复制粘贴。' +
+        '也可用维度标题上的「采纳本范围全部结论」批量写入。</div></div>';
+    }
+    $('#aiBody').innerHTML = h;
+
+    var total = scopes.reduce(function (s, x) { return s + x.stat.common.length + x.stat.diff.length + x.stat.missing.length; }, 0);
+    var cases = scopes.reduce(function (s, x) { return s + x.stat.tot; }, 0);
+    $('#aiMeta').textContent = scopes.length ? (scopes.length + ' 个维度 · ' + cases + ' 份案卷 · ' + total + ' 条结论') : '—';
+  }
+
+  /* ================= ③ 案卷查询结果 ================= */
+  function dimsPool() {
+    var seen = {}, out = [];
+    buildDims().forEach(function (sc) {
+      sc.list.forEach(function (x) {
+        if (!seen[x.acceptNo]) { seen[x.acceptNo] = 1; out.push(x); }
+      });
+    });
+    out.sort(function (a, b) { return a.issueAt < b.issueAt ? 1 : -1; });
+    return out;
+  }
+
+  function renderTable() {
+    if (!S.queried) {
+      S.results = [];
+      $('#listSub').textContent = '';
+      $('#listMode').textContent = '未查询';
+      $('#listSel').textContent = '已选 0 / 0';
+      $('#listSel').classList.remove('on');
+      var ha0 = $('#hAll');
+      if (ha0) { ha0.checked = false; ha0.indeterminate = false; ha0.disabled = true; }
+      $('#hrows').innerHTML = '<tr><td colspan="12"><div class="empty">' +
+        '<div class="eic">' + ic('filter', 20) + '</div>' +
+        '<div class="et">尚未查询案卷清单</div>' +
+        '<div class="es">在上方「筛选条件」里设置条件后点「查询」，命中结果会显示在这里；' +
+        '勾选需要参考的案卷后，点「按当前筛选条件生成 AI 分析」，只对勾选的这批案卷做分析。</div>' +
+        '<div class="eact"><button class="btn sm primary" id="emptyQuery">去查询</button></div></div></td></tr>';
+      var eq = $('#emptyQuery');
+      if (eq) eq.onclick = function () {
+        var box = $('#filterBox');
+        if (box) box.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      };
+      APP.renderPager($('#pager'), 0, 1, S.size, function () {});
+      syncAnalyzeBtn();
+      return;
+    }
+    S.results = S.mode === 'filter' ? filterList() : dimsPool();
+    S.results.sort(function (a, b) { return a.issueAt < b.issueAt ? 1 : -1; });
+    var total = S.results.length;
+    var pages = Math.max(1, Math.ceil(total / S.size));
+    if (S.page > pages) S.page = pages;
+    var start = (S.page - 1) * S.size;
+    var rows = S.results.slice(start, start + S.size);
+
+    $('#listSub').textContent = total ? ('共 ' + total + ' 份案卷' + (S.mode === 'filter' ? '（按筛选条件）' : '（默认维度合并去重）')) : '';
+    $('#listMode').textContent = S.mode === 'filter' ? '筛选结果' : '默认维度范围';
+
+    var tb = $('#hrows');
+    if (!total) {
+      tb.innerHTML = '<tr><td colspan="12"><div class="empty">' +
+        '<div class="eic">' + ic('search', 20) + '</div>' +
+        '<div class="et">没有符合条件的案卷</div>' +
+        '<div class="es">可放宽筛选条件或减少关键词后重试</div>' +
+        '<div class="eact"><button class="btn sm" id="emptyReset">重置条件</button></div></div></td></tr>';
+      var er = $('#emptyReset');
+      if (er) er.onclick = doReset;
+    } else {
+      tb.innerHTML = rows.map(function (x) {
+        var path = (x.devCat || []).filter(Boolean);
+        return '<tr data-no="' + esc(x.acceptNo) + '"' + (S.checked[x.acceptNo] ? ' class="picked"' : '') + '>' +
+          '<td class="ckcell"><input type="checkbox" data-pick="' + esc(x.acceptNo) + '"' +
+            (S.checked[x.acceptNo] ? ' checked' : '') + ' title="勾选后参与 AI 分析"></td>' +
+          '<td class="mono" style="font-weight:600;color:var(--primary-d)">' + esc(x.acceptNo) + '</td>' +
+          '<td><div class="t1" style="font-weight:400">' + esc(x.product) + '</div></td>' +
+          '<td><div class="t1" style="font-weight:400">' + esc(x.ent) + '</div></td>' +
+          '<td class="nowrap" style="font-size:12.5px;color:var(--t3)" title="' + esc(path.join(' › ')) + '">' +
+            esc(path[2] || path[1] || '—') + '</td>' +
+          '<td class="nowrap">' + esc(x.applyType) + '</td>' +
+          '<td class="nowrap" style="font-size:12.5px">' + esc(x.applyItem) + '</td>' +
+          '<td class="nowrap">' + esc(x.productClass) + '</td>' +
+          '<td class="nowrap">' + esc(x.region) + '</td>' +
+          '<td class="nowrap"><span class="badge ' +
+            (x.reviewStatus === '已完结' ? 'b-green' : x.reviewStatus === '待企业补充材料' ? 'b-amber' : 'b-blue') +
+            '"><span class="bd"></span>' + esc(x.reviewStatus) + '</span></td>' +
+          '<td class="nowrap mono" style="font-size:12px;color:var(--t3)">' + esc(x.issueAt) + '</td>' +
+          '<td><div class="cell-ops"><a data-detail="' + esc(x.acceptNo) + '">查看明细</a></div></td>' +
+        '</tr>';
+      }).join('');
+    }
+    paintSel(rows);
+    APP.renderPager($('#pager'), total, S.page, S.size, function (p) { S.page = p; renderTable(); });
+    syncAnalyzeBtn();
+  }
+
+  /* 勾选态：全选框（含半选）+ 已选统计 */
+  function paintSel(rows) {
+    var pageNos = (rows || []).map(function (x) { return x.acceptNo; });
+    var onPage = pageNos.filter(function (no) { return S.checked[no]; }).length;
+    var all = $('#hAll');
+    if (all) {
+      all.checked = pageNos.length > 0 && onPage === pageNos.length;
+      all.indeterminate = onPage > 0 && onPage < pageNos.length;
+      all.disabled = pageNos.length === 0;
+    }
+    var n = checkedList().length;
+    var total = S.queried ? S.results.length : 0;
+    var box = $('#listSel');
+    if (box) {
+      box.textContent = '已选 ' + n + ' / ' + total;
+      box.classList.toggle('on', n > 0);
+    }
+    var sa = $('#selAll'), sn = $('#selNone');
+    if (sa) sa.classList.toggle('muted', !total || n === total);
+    if (sn) sn.classList.toggle('muted', !n);
+  }
+
+  function checkedList() {
+    return (S.results || []).filter(function (x) { return S.checked[x.acceptNo]; });
+  }
+
+  /* 「按当前筛选条件生成 AI 分析」必须先在查询结果里有数据 */
+  function syncAnalyzeBtn() {
+    var b = $('#btnAnalyzeFilter');
+    if (!b) return;
+    var all = S.queried ? S.results.length : 0;
+    var n = S.queried ? checkedList().length : 0;
+    b.classList.toggle('muted', !n);
+    b.setAttribute('aria-disabled', n ? 'false' : 'true');
+    b.title = n ? ('只对已勾选的 ' + n + ' 份案卷生成 AI 分析（本次查询共命中 ' + all + ' 份）')
+      : (all ? '请先在下方「案卷查询结果」里勾选要参与分析的案卷' : '先用筛选条件查询出案卷，才能按勾选结果生成分析');
+  }
+
+  /* ================= 明细抽屉 ================= */
+  function showDetail(no) {
+    var x = DATA.HISTORY.filter(function (h) { return h.acceptNo === no; })[0];
+    if (!x) return;
+    var CN = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
+    /* v10：发补明细不再拆成结构化字段，直接按历史发补意见原文带入显示 */
+    var paras = (x.points || []).map(function (id, i) {
+      var p = SUM.pointById(id);
+      var txt = p && p.script ? p.script : (p ? p.t : id);
+      return '<p>' + CN[i] + '、' + esc(txt) + '</p>';
+    }).join('');
+    APP.openDrawer({
+      title: '历史发补意见明细 · ' + x.acceptNo,
+      body: '<div class="infobar i-gray" style="margin-bottom:12px">' + ic('info', 15, 'ib-ic') +
+        '<div>仅供审评老师自查参考，<b>不作为规则、不作为强制发补依据</b>；下列内容为历史案卷发补意见原文。</div></div>' +
+        '<div class="histdoc">' +
+          '<div class="hd"><b>发补意见</b><span>' + esc(x.acceptNo) + ' · ' + esc(x.product) + '</span></div>' +
+          '<div class="meta">申请人：' + esc(x.ent) + '　|　发补时间：' + esc(x.issueAt) +
+            '　|　' + esc(x.applyType || x.regType) + '　|　' + esc(x.productClass) + ' · ' + esc(x.region) + '</div>' +
+          '<div class="body">' + paras + '</div>' +
+        '</div>' +
+        '<div class="fhint">以上为演示构造数据；正式上线应从审评系统历史案卷库实时调取原文。</div>',
+      foot: '<span style="font-size:12px;color:var(--t4)">共 ' + (x.points || []).length + ' 条</span><span style="flex:1"></span>' +
+        '<button class="btn" data-close="1">关闭</button>'
+    });
+  }
+
+  /* ================= 一键采纳 ================= */
+  function applyUrl(items, label) {
+    if (!S.cur) {
+      APP.toast('请先在页面顶部选择「采纳目标案卷」，AI 结论需要写入某个案卷的发补意见草稿箱', 'warn', 4200);
+      return;
+    }
+    var q = items.map(function (it) { return it.pid + ':' + it.n + ':' + it.tot; }).join(',');
+    if (IN_FRAME) {
+      window.parent.postMessage({ __fb: 'histAdopt', adopt: q, scopeLabel: label }, '*');
+      return;
+    }
+    location.href = './08-发补智能体.html?case=' + encodeURIComponent(S.cur.acceptNo) + '&tab=draft' +
+      '&adopt=' + encodeURIComponent(q) + '&scopeLabel=' + encodeURIComponent(label);
+  }
+  function adoptOne(btn) {
+    var pid = btn.dataset.aiadopt;
+    var p = SUM.pointById(pid);
+    var key = btn.dataset.scope;
+    var n = parseInt(btn.dataset.n || '0', 10), tot = parseInt(btn.dataset.tot || '0', 10);
+    if (!S.cur) { APP.toast('请先在页面顶部选择「采纳目标案卷」', 'warn', 3600); return; }
+    APP.confirmDialog({
+      title: '一键采纳到发补意见草稿箱', tone: 'amber', okText: '确认采纳',
+      body: '问题点：<b>' + esc(p ? p.t : pid) + '</b><br>' +
+        '维度：' + esc(DIMNAME[key] || key) + '（' + n + '/' + tot + '）<br>' +
+        '采纳到：<b>' + esc(S.cur.acceptNo) + '</b> · ' + esc(S.cur.product) + '<br><br>' +
+        '将把该结论的<b>参照话术</b>与<b>结论文据</b>写入发补意见草稿箱，并标记为<b>人工已认可</b>。确认后跳转到草稿页。'
+    }, function () { applyUrl([{ pid: pid, n: n, tot: tot }], DIMNAME[key] || 'AI 分析'); });
+  }
+  function adoptBatch(scKey) {
+    var sc = buildDims().filter(function (x) { return x.key === scKey; })[0];
+    if (!sc) return;
+    if (!S.cur) { APP.toast('请先在页面顶部选择「采纳目标案卷」', 'warn', 3600); return; }
+    var all = sc.stat.common.concat(sc.stat.diff, sc.stat.missing);
+    if (!all.length) { APP.toast('本维度没有可采纳的结论', 'warn', 2200); return; }
+    var low = all.filter(function (c) { return (c.n / c.tot) < 0.5; });
+    APP.confirmDialog({
+      title: '采纳本维度全部结论', tone: 'amber', okText: '确认采纳 ' + all.length + ' 条',
+      body: '维度：<b>' + esc(sc.label) + '</b>（' + sc.stat.tot + ' 份案卷）<br>' +
+        '将一次写入 <b>' + all.length + '</b> 条结论（高频 ' + sc.stat.common.length +
+        ' · 差异 ' + sc.stat.diff.length + ' · 易遗漏 ' + sc.stat.missing.length + '），全部标记为<b>人工已认可</b>。' +
+        (low.length ? '<br><br><b>提示：</b>其中 ' + low.length + ' 条在维度内占比不足 50%，建议逐条确认后再采纳。' : '')
+    }, function () {
+      applyUrl(all.map(function (c) { return { pid: c.id, n: c.n, tot: c.tot }; }), sc.label);
+    });
+  }
+
+  /* ================= 事件 ================= */
+  $('#aiBody').addEventListener('click', function (e) {
+    var t = e.target;
+    var dim = t.closest('[data-dim]');
+    if (dim) {
+      var k = dim.dataset.dim;
+      if (k === 'custom') { S.customList = null; }
+      else { S.dims[k] = !S.dims[k]; }
+      renderAI(); renderTable();
+      return;
+    }
+    var d = t.closest('[data-detail]'); if (d) { showDetail(d.dataset.detail); return; }
+    var tg = t.closest('[data-crow]');
+    if (tg) { var row = tg.closest('.crow'); if (row) row.classList.toggle('open'); return; }
+    var st = t.closest('[data-scope-toggle]');
+    if (st) {
+      var blk = st.closest('.scopeblk');
+      if (blk) { S.dimExpanded[blk.dataset.scope] = !S.dimExpanded[blk.dataset.scope]; renderAI(); }
+      return;
+    }
+    var ai = t.closest('[data-aiadopt]'); if (ai) { adoptOne(ai); return; }
+    var ba = t.closest('[data-batch-adopt]'); if (ba) { adoptBatch(ba.dataset.batchAdopt); return; }
+    if (t.closest('#btnRefreshAI')) {
+      APP.toast('正在按当前维度重新分析…', 'warn', 1200);
+      setTimeout(function () { renderAI(); APP.toast('分析已更新', 'ok', 1600); }, 700);
+      return;
+    }
+  });
+  $('#hrows').addEventListener('click', function (e) {
+    var d = e.target.closest('[data-detail]');
+    if (d) showDetail(d.dataset.detail);
+  });
+  /* 行内复选框 → 只对勾选的案卷做 AI 分析 */
+  $('#hrows').addEventListener('change', function (e) {
+    var cb = e.target.closest ? e.target.closest('[data-pick]') : null;
+    if (!cb) return;
+    var no = cb.dataset.pick;
+    if (cb.checked) S.checked[no] = true; else delete S.checked[no];
+    var tr = cb.closest('tr');
+    if (tr) tr.classList.toggle('picked', !!cb.checked);
+    /* 当前页全选态 */
+    var boxes = $$('#hrows [data-pick]');
+    var on = boxes.filter(function (b) { return b.checked; }).length;
+    var all = $('#hAll');
+    if (all) {
+      all.checked = boxes.length > 0 && on === boxes.length;
+      all.indeterminate = on > 0 && on < boxes.length;
+    }
+    var n = checkedList().length;
+    var box = $('#listSel');
+    if (box) { box.textContent = '已选 ' + n + ' / ' + S.results.length; box.classList.toggle('on', n > 0); }
+    var sa = $('#selAll'), sn = $('#selNone');
+    if (sa) sa.classList.toggle('muted', n === S.results.length);
+    if (sn) sn.classList.toggle('muted', !n);
+    syncAnalyzeBtn();
+  });
+  /* 表头全选框 → 当前页全选 / 取消 */
+  document.addEventListener('change', function (e) {
+    if (e.target.id !== 'hAll') return;
+    var on = e.target.checked;
+    $$('#hrows [data-pick]').forEach(function (b) {
+      b.checked = on;
+      if (on) S.checked[b.dataset.pick] = true; else delete S.checked[b.dataset.pick];
+      var tr = b.closest('tr'); if (tr) tr.classList.toggle('picked', on);
+    });
+    var n = checkedList().length;
+    var box = $('#listSel');
+    if (box) { box.textContent = '已选 ' + n + ' / ' + S.results.length; box.classList.toggle('on', n > 0); }
+    syncAnalyzeBtn();
+  });
+  $('#selAll').onclick = function () {
+    S.results.forEach(function (x) { S.checked[x.acceptNo] = true; });
+    renderTable();
+  };
+  $('#selNone').onclick = function () {
+    S.checked = {};
+    renderTable();
+  };
+
+  function doQuery() {
+    readFilters();
+    var list = filterList();
+    S.mode = 'filter';
+    S.queried = true;
+    S.checked = {};
+    list.forEach(function (x) { S.checked[x.acceptNo] = true; });
+    S.page = 1;
+    renderTable();
+    $('#filterHit').textContent = '命中 ' + list.length + ' 份案卷';
+    APP.toast('已按筛选条件查询，命中 ' + list.length + ' 份案卷', 'ok', 2200);
+  }
+  function doReset() {
+    S.filters = {
+      applicant: '', product: '', devCat: [],
+      applyType: [], applyItem: [], productClass: [], region: [],
+      status: '', from: '', to: ''
+    };
+    S.mode = 'dims'; S.page = 1; S.customList = null; S.queried = false;
+    S.checked = {}; S.customLabel = ''; S.customDesc = '';
+    renderFilters(); renderAI(); renderTable();
+    $('#filterHit').textContent = '未筛选';
+    APP.toast('已重置筛选条件，清单回到默认维度范围', 'ok', 1800);
+  }
+  $('#btnQuery').onclick = doQuery;
+  $('#btnReset').onclick = doReset;
+  $('#btnAnalyzeFilter').onclick = function () {
+    if (!S.queried || !S.results.length) {
+      APP.toast('请先用筛选条件查询出案卷，再按勾选结果生成 AI 分析', 'warn', 3000);
+      return;
+    }
+    var list = checkedList();
+    if (!list.length) {
+      APP.toast('请先在下方清单里勾选至少 1 份要参与分析的案卷', 'warn', 2800);
+      var tb = $('#hrows');
+      if (tb) tb.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      return;
+    }
+    S.customList = list;
+    S.customLabel = '已勾选 ' + list.length + ' 份案卷';
+    S.customDesc = '从案卷查询结果中勾选 · ' + (describeFilters() || '不限筛选条件');
+    S.dimExpanded.custom = true;
+    S.mode = 'filter'; S.page = 1;
+    renderAI(); renderTable();
+    APP.toast('已按勾选的 ' + list.length + ' 份案卷新增分析维度', 'ok', 3200);
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  };
+
+  /* ================= 渲染 ================= */
+  function renderAll() {
+    renderFilters();
+    renderAI();
+    renderTable();
+  }
+
+  renderAll();
+
+  /* 定位到某条历史参考（URL ?pt= 或草稿页「规则依据」消息都走这里） */
+  function focusPoint(pt) {
+    setTimeout(function () {
+      var el = document.querySelector('.crow[data-conc="' + pt + '"]');
+      if (!el) { APP.toast('该历史参考不在当前默认维度范围内，可手工筛选后查看', 'warn', 3200); return; }
+      el.classList.add('open', 'focus');
+      el.scrollIntoView({ block: 'center', behavior: 'auto' });
+      APP.toast('已定位到该条历史参考：' + pt, 'ok', 2600);
+    }, 260);
+  }
+  (function focusFromUrl() {
+    var m = /[?&]pt=(PT\d+)/.exec(location.search);
+    if (m) focusPoint(m[1]);
+  })();
+  window.addEventListener('message', function (e) {
+    var d = e.data || {};
+    if (d.__fb === 'focusPoint' && d.pt) focusPoint(d.pt);
+  });
+
+  window.__PROTO4 = {
+    S: S, buildDims: buildDims, filterList: filterList, dimsPool: dimsPool,
+    renderAI: renderAI, renderTable: renderTable, doQuery: doQuery, doReset: doReset,
+    applyUrl: applyUrl, readFilters: readFilters, describeFilters: describeFilters,
+    SUM: SUM, CASCADE: CASCADE
+  };
+})();
+</script>
+</body>
+</html>

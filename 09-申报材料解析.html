@@ -1,0 +1,902 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>申报材料解析 · 发补智能体原型 v18</title>
+<link rel="stylesheet" href="./assets/style.css">
+</head>
+<body class="fit">
+<div class="shell">
+  <header class="topbar" id="topbar"></header>
+  <aside class="side" id="side"></aside>
+
+  <main class="content">
+    <div class="page-head">
+      <div>
+        <div class="page-title"><span class="dot"></span>申报材料解析</div>
+        <div class="page-sub">一个案卷的上百个文件按<b>上传 → 目录扫描 → 归类 → 解析</b>四个环节分别成表；每个环节的列、筛选与失败原因都不一样，点上方环节切换</div>
+      </div>
+      <div class="right">
+        <a class="btn" href="./01-任务列表.html">← 返回任务列表</a>
+        <a class="btn" id="btnCompare">进入比对智能体</a>
+        <a class="btn primary" id="btnFb">进入发补智能体</a>
+      </div>
+    </div>
+
+    <div class="casebar" id="casebar"></div>
+
+    <div class="stabs" id="stabs"></div>
+
+    <div class="spanel">
+      <div class="stbar" id="stBar"></div>
+      <div class="stbody" id="stBody"></div>
+    </div>
+  </main>
+</div>
+
+<div id="toastBox"></div>
+
+<script src="./assets/app.js"></script>
+<script src="./assets/data.js"></script>
+<script>
+(function () {
+  'use strict';
+  var $ = APP.$, $$ = APP.$$, esc = APP.esc, ic = APP.ic;
+
+  function qs(k) {
+    var m = new RegExp('[?&]' + k + '=([^&]*)').exec(location.search);
+    return m ? decodeURIComponent(m[1]) : '';
+  }
+
+  /* ---------------- 案卷上下文 ---------------- */
+  var LS_CASE = 'fb_v18_case';
+  var wantNo = qs('case');
+  if (!wantNo) { try { wantNo = localStorage.getItem(LS_CASE) || ''; } catch (e) {} }
+  var CASE = DATA.CASES.filter(function (c) { return c.acceptNo === wantNo; })[0] ||
+    DATA.CASES.filter(function (c) { return c.acceptNo === 'CQX2600312'; })[0] || DATA.CASES[0];
+  try { localStorage.setItem(LS_CASE, CASE.acceptNo); } catch (e) {}
+
+  APP.renderTop({ crumb: ['审评工作台', '任务列表', '申报材料解析'] });
+  APP.renderSide('tasks');
+  document.body.classList.add('fit');
+
+  var STAGES = [
+    { k: 'upload',   t: '资料文件夹', d: '文件夹 · 上传结果与服务端落地' },
+    { k: 'unzip',    t: '目录扫描',   d: '逐个文件 · 是否成功读取' },
+    { k: 'classify', t: 'ch → rps 归类', d: 'ch 文件 · 归属目录与待确认项' },
+    { k: 'parse',    t: 'PDF 解析',   d: '逐个文件 · 抽取结果与失败原因' }
+  ];
+
+  var ST = {
+    stage: qs('stage') || '',
+    files: [],
+    archives: [],
+    kw: '', st: '', dir: '', mode: '', err: '', arc: '',
+    clsKw: '', clsFilter: 'all', selDir: '', sel: {}
+  };
+
+  var SKIP_ERR = '前序「目录扫描」失败，该文件未进入解析';
+  var PARSE_ERRS = [
+    '扫描件无文本层（OCR 未启用）',
+    '文件已加密，无法提取文本',
+    'PDF 结构损坏（文件尾缺失）',
+    '字体嵌入异常，抽取结果为空',
+    '页数超限（>500 页），解析超时'
+  ];
+
+  /* ======================================================================
+     数据构造：同一个 128 个文件，按案卷的处理进度生成四个环节的明细
+     ====================================================================== */
+  function buildData(c) {
+    var f = c.flow || {};
+    var un = f.unzip || {}, pa = f.parse || {}, cl = f.classify || {};
+    var base = JSON.parse(JSON.stringify(DATA.DOCS));
+    var n = base.length;
+    var hardUnzip = un.st === 'fail' && !un.files;
+    var unFailN = hardUnzip ? n : (un.failN || 0);
+    var parseFailN = pa.st === 'fail' ? (pa.failN || 0) : 0;
+    var lowN = (cl.st === 'done' || cl.st === 'fail') ? (cl.low == null ? 3 : cl.low) : 0;
+
+    /* 失败样本按等距散布，贴近真实（一个文件夹里失败文件不会是连续几条） */
+    function spread(count, start) {
+      var out = [];
+      var step = Math.max(1, Math.floor(n / (count + 1)));
+      for (var k = 0; k < count; k++) out.push(Math.min(n - 1, start + k * step));
+      return out;
+    }
+    var uni = {};
+    spread(unFailN, 3).forEach(function (i) { uni[i] = 1; });
+    var pai = {};
+    spread(parseFailN, 6).forEach(function (i) {
+      if (!uni[i]) pai[i] = 1;
+    });
+
+    var files = base.map(function (d, idx) {
+      var unFail = !!uni[idx];
+      var paFail = !!pai[idx];
+      var isLow = false;
+      return {
+        id: d.id,
+        name: d.name,
+        ch: d.ch,
+        page: d.page,
+        size: (0.6 + ((d.page * 7) % 31) * 0.21).toFixed(1) + ' MB',
+        arch: idx < 88 ? 'Z1' : 'Z2',
+        path: DATA.dirText(d.dir),
+        dir: d.dir,
+        low: false,
+        edited: false,
+        note: d.note || '',
+        unzip: {
+          st: unFail ? 'fail' : 'ok',
+          err: unFail ? '文件损坏或已加密，无法读取' : ''
+        },
+        parse: {
+          st: unFail ? 'skip' : (paFail ? 'fail' : 'ok'),
+          chars: Math.round(d.page * 780 + (idx * 137) % 900),
+          cost: (0.4 + ((d.page * 3) % 17) * 0.12).toFixed(1) + 's',
+          err: unFail ? SKIP_ERR : (paFail ? PARSE_ERRS[idx % PARSE_ERRS.length] : '')
+        }
+      };
+    });
+
+    /* 归类待确认：取读取成功的文件里靠前的若干个 */
+    var low = 0;
+    for (var k = 0; k < files.length && low < lowN; k++) {
+      if (files[k].unzip.st === 'ok') { files[k].low = true; low++; }
+    }
+
+    /* 上传记录：直接上传文件夹，一条记录对应一次选择 */
+    var archives = [];
+    var up = f.upload || {};
+    var dirName = (up.file && up.file.name) || ('企业申报资料_' + c.acceptNo);
+    if (up.st === 'running') {
+      archives.push({
+        id: 'Z1', name: dirName,
+        size: (up.file && up.file.size) || '42.8 MB', files: 0,
+        at: '上传中', cost: '—', st: 'run', pct: up.pct || 0, err: ''
+      });
+    } else if (up.st === 'done') {
+      if (hardUnzip || parseFailN || unFailN) {
+        archives.push({
+          id: 'Z0', name: dirName + '（第 1 次上传）',
+          size: '—', files: 0, at: '09:08:41', cost: '—', st: 'fail',
+          err: '网络中断（连接被重置），已自动重传'
+        });
+      }
+      archives.push({
+        id: 'Z1', name: dirName, size: '42.8 MB',
+        files: n, at: '09:12:03', cost: '12.4s', st: 'ok', err: ''
+      });
+    }
+    return { files: hardUnzip ? [] : files, archives: archives, hardUnzip: hardUnzip };
+  }
+
+  function loadCase() {
+    ST.files = [];
+    ST.archives = [];
+    var d = buildData(CASE);
+    ST.files = d.files;
+    ST.archives = d.archives;
+  }
+
+  /* ---------------- 统计 ---------------- */
+  function stat() {
+    var f = (CASE.flow || {});
+    var un = f.unzip || {}, pa = f.parse || {}, cl = f.classify || {};
+    var up = f.upload || {};
+    var upOk = ST.archives.filter(function (a) { return a.st === 'ok'; });
+    var upFail = ST.archives.filter(function (a) { return a.st === 'fail'; });
+    var upRun = ST.archives.filter(function (a) { return a.st === 'run'; });
+    var unOk = ST.files.filter(function (x) { return x.unzip.st === 'ok'; });
+    var unFail = ST.files.filter(function (x) { return x.unzip.st === 'fail'; });
+    var clLow = ST.files.filter(function (x) { return x.unzip.st === 'ok' && x.low && !x.edited; });
+    var clManual = ST.files.filter(function (x) { return x.edited; });
+    var paOk = ST.files.filter(function (x) { return x.parse.st === 'ok'; });
+    var paFail = ST.files.filter(function (x) { return x.parse.st === 'fail'; });
+    return {
+      upTotal: ST.archives.length, upOk: upOk.length, upFail: upFail.length, upRun: upRun.length,
+      unOk: unOk.length, unFail: unFail.length,
+      clLow: clLow.length, clManual: clManual.length,
+      paOk: paOk.length, paFail: paFail.length,
+      fileTotal: ST.files.length, hardUnzip: !!(un.st === 'fail' && !un.files),
+      upSt: up.st, unSt: un.st, clSt: cl.st, paSt: pa.st
+    };
+  }
+
+  /* ---------------- 顶部：案卷条 ---------------- */
+  function renderCasebar() {
+    var st = DATA.STATUS[CASE.status] || DATA.STATUS['待复核'];
+    var opts = DATA.CASES.map(function (c) {
+      return '<option value="' + esc(c.acceptNo) + '"' + (c.acceptNo === CASE.acceptNo ? ' selected' : '') + '>' +
+        esc(c.acceptNo) + ' · ' + esc(c.product) + '</option>';
+    }).join('');
+    $('#casebar').innerHTML =
+      '<div class="cb-main">' +
+        '<div class="cb-name">' + esc(CASE.product) +
+          '<span class="badge ' + (st.tone || 'b-gray') + '"><span class="bd"></span>' + esc(CASE.status) + '</span>' +
+          '<span class="pid">' + esc(CASE.acceptNo) + '</span></div>' +
+        '<div class="cb-meta">' +
+          '<span>申请人 <b>' + esc(CASE.ent) + '</b></span>' +
+          '<span>器械品类 <b>' + esc((CASE.devCat || []).slice(1, 3).join(' › ') || CASE.cat) + '</b></span>' +
+          '<span>申请类型 <b>' + esc(CASE.applyType || '—') + '</b></span>' +
+          '<span>产品类别 <b>' + esc(CASE.productClass || '—') + ' · ' + esc(CASE.region || '—') + '</b></span>' +
+        '</div>' +
+      '</div>' +
+      '<div class="cb-right">' +
+        '<span class="cb-case"><span class="lb">切换案卷</span><select id="cbCase">' + opts + '</select></span>' +
+      '</div>';
+    $('#cbCase').onchange = function () {
+      location.href = './09-申报材料解析.html?case=' + encodeURIComponent(this.value) + '&stage=' + ST.stage;
+    };
+    $('#btnCompare').href = './07-比对智能体.html?case=' + encodeURIComponent(CASE.acceptNo);
+    $('#btnFb').href = './08-发补智能体.html?case=' + encodeURIComponent(CASE.acceptNo) + '&tab=rules';
+  }
+
+  /* ---------------- 环节 Tab ---------------- */
+  function stageVal(k, s) {
+    if (k === 'upload') return s.upTotal ? (s.upOk + '/' + s.upTotal + ' 个文件夹') : '未上传';
+    if (k === 'unzip') return s.hardUnzip ? '0 个文件' : (s.fileTotal ? (s.unOk + '/' + s.fileTotal + ' 个文件') : '待读取');
+    if (k === 'classify') return s.unOk ? (s.unOk + ' 个文件已归类') : '待归类';
+    return s.fileTotal ? (s.paOk + '/' + (s.paOk + s.paFail) + ' 个文件') : '待解析';
+  }
+  function stageBadge(k, s) {
+    if (k === 'upload') {
+      if (s.upFail) return '<span class="sbad red">失败 ' + s.upFail + '</span>';
+      if (s.upRun) return '<span class="sbad blue">上传中 ' + (ST.archives[0] ? ST.archives[0].pct : 0) + '%</span>';
+      return s.upTotal ? '<span class="sbad green">全部成功</span>' : '';
+    }
+    if (k === 'unzip') {
+      if (s.hardUnzip) return '<span class="sbad red">读取失败</span>';
+      if (s.unFail) return '<span class="sbad red">失败 ' + s.unFail + '</span>';
+      return s.fileTotal ? '<span class="sbad green">全部成功</span>' : '';
+    }
+    if (k === 'classify') {
+      if (s.clLow) return '<span class="sbad amber">待确认 ' + s.clLow + '</span>';
+      return s.unOk ? '<span class="sbad green">已归类</span>' : '';
+    }
+    if (s.paFail) return '<span class="sbad red">失败 ' + s.paFail + '</span>';
+    return s.paOk ? '<span class="sbad green">全部成功</span>' : '';
+  }
+  function renderStabs() {
+    var s = stat();
+    $('#stabs').innerHTML = STAGES.map(function (g, i) {
+      return '<button type="button" class="stab' + (g.k === ST.stage ? ' on' : '') + '" data-stage="' + g.k + '">' +
+        '<span class="sn">' + (i + 1) + '</span>' +
+        '<span class="stx"><b>' + esc(g.t) + '</b><em>' + esc(g.d) + '</em></span>' +
+        '<span class="sv">' + esc(stageVal(g.k, s)) + '</span>' +
+        stageBadge(g.k, s) +
+      '</button>';
+    }).join('');
+  }
+
+  /* ---------------- 通用小工具 ---------------- */
+  function pill(kind, text) {
+    var cls = kind === 'ok' ? 'green' : kind === 'fail' ? 'red' : kind === 'run' ? 'blue' : kind === 'skip' ? 'gray' : 'amber';
+    return '<span class="tpill ' + cls + '">' + esc(text) + '</span>';
+  }
+  function emptyState(t, s, action) {
+    return '<div class="stempty"><div class="se-ic">' + ic('doc', 20) + '</div>' +
+      '<div class="se-t">' + esc(t) + '</div>' +
+      '<div class="se-s">' + esc(s) + '</div>' + (action || '') + '</div>';
+  }
+  function matchKw() {
+    var kw = ST.kw.trim().toLowerCase();
+    if (!kw) return function () { return true; };
+    return function (x) {
+      return (x.name + ' ' + (x.ch || '') + ' ' + (x.path || '')).toLowerCase().indexOf(kw) >= 0;
+    };
+  }
+  function searchInput(ph) {
+    return '<input class="inp" id="stKw" placeholder="' + esc(ph) + '" value="' + esc(ST.kw) + '">';
+  }
+  function selHtml(id, opts, cur) {
+    return '<select class="sel" id="' + id + '">' + opts.map(function (o) {
+      return '<option value="' + esc(o[0]) + '"' + (o[0] === cur ? ' selected' : '') + '>' + esc(o[1]) + '</option>';
+    }).join('') + '</select>';
+  }
+
+  /* ======================================================================
+     ① 申报资料文件夹
+     ====================================================================== */
+  function renderUpload() {
+    var s = stat();
+    $('#stBar').innerHTML =
+      searchInput('搜索文件夹名称') +
+      selHtml('stFilter', [['', '全部状态'], ['ok', '上传成功'], ['fail', '上传失败'], ['run', '上传中']], ST.st) +
+      '<button class="btn sm" id="btnFailOnly">只看失败</button>' +
+      '<button class="btn sm" id="stReset">重置</button>' +
+      '<span class="sp"></span><span class="sum">' + (s.upTotal
+        ? ('共 <b>' + s.upTotal + '</b> 个文件夹 · 成功 <b>' + s.upOk + '</b> · 失败 <b>' + s.upFail + '</b>')
+        : '尚未上传文件夹') + '</span>';
+    bindBar();
+
+    if (!ST.archives.length) {
+      $('#stBody').innerHTML = emptyState(
+        s.upSt === 'running' ? '文件夹正在上传' : '该案卷尚未上传申报资料文件夹',
+        s.upSt === 'running' ? '上传完成后自动扫描目录，可在任务列表查看进度' : '回任务列表点「开始处理」，或新建任务时直接选择文件夹');
+      return;
+    }
+    var kw = ST.kw.trim().toLowerCase();
+    var list = ST.archives.filter(function (a) {
+      if (ST.st && a.st !== ST.st) return false;
+      if (kw && a.name.toLowerCase().indexOf(kw) < 0) return false;
+      return true;
+    });
+    var rows = list.map(function (a, i) {
+      var st = a.st === 'ok' ? pill('ok', '上传成功')
+        : a.st === 'run' ? pill('run', '上传中 ' + a.pct + '%')
+        : pill('fail', '上传失败');
+      return '<tr class="' + (a.st === 'fail' ? 'failrow' : '') + '" data-z="' + esc(a.id) + '">' +
+        '<td class="mono" style="color:var(--t4)">' + (ST.archives.indexOf(a) + 1) + '</td>' +
+        '<td><div class="fn mono" style="font-size:11.8px">' + esc(a.name) + '</div></td>' +
+        '<td class="mono">' + esc(a.size) + '</td>' +
+        '<td class="mono">' + (a.files ? a.files : '—') + '</td>' +
+        '<td class="mono" style="color:var(--t3)">' + esc(a.at) + '</td>' +
+        '<td class="mono" style="color:var(--t3)">' + esc(a.cost) + '</td>' +
+        '<td>' + st + (a.st === 'run' ? '<div class="pbar" style="margin-top:5px"><i class="run" style="width:' + a.pct + '%"></i></div>' : '') + '</td>' +
+        '<td class="whycell">' + (a.err ? esc(a.err) : '<span style="color:var(--t4)">—</span>') + '</td>' +
+        '<td>' + (a.st === 'fail'
+          ? '<span class="view" data-reup="' + esc(a.id) + '">重新上传</span>'
+          : (a.files ? '<span class="view" data-see="' + esc(a.id) + '">查看文件</span>' : '<span style="color:var(--t4)">—</span>')) + '</td>' +
+      '</tr>';
+    }).join('');
+
+    var okSize = ST.archives.filter(function (a) { return a.st === 'ok'; })
+      .reduce(function (s2, a) { return s2 + parseFloat(a.size || 0); }, 0);
+    var totalFiles = ST.archives.reduce(function (s2, a) { return s2 + (a.files || 0); }, 0);
+    var totalCost = ST.archives.filter(function (a) { return a.st === 'ok'; })
+      .reduce(function (s2, a) { return s2 + parseFloat(a.cost || 0); }, 0);
+    var retry = ST.archives.filter(function (a) { return a.st === 'fail'; }).length;
+
+    $('#stBody').innerHTML = '<table class="pfile ftable"><thead><tr>' +
+      '<th style="width:42px">#</th><th>文件夹名称</th><th style="width:92px">大小</th>' +
+      '<th style="width:80px">文件数</th><th style="width:96px">开始时间</th><th style="width:76px">耗时</th>' +
+      '<th style="width:132px">上传状态</th><th>失败原因</th><th style="width:96px">操作</th>' +
+      '</tr></thead><tbody>' + (rows || '<tr><td colspan="9"><div class="empty" style="padding:30px">没有符合条件的文件夹</div></td></tr>') + '</tbody></table>' +
+      '<div class="upsum">' +
+        '<div class="u"><div class="uk">上传体积</div><div class="uv">' + okSize.toFixed(1) + '<small> MB</small></div>' +
+          '<div class="us">成功落地 ' + ST.archives.filter(function (a) { return a.st === 'ok'; }).length + ' 个文件夹</div></div>' +
+        '<div class="u"><div class="uk">文件夹内文件</div><div class="uv">' + totalFiles + '<small> 个</small></div>' +
+          '<div class="us">扫描后按 ch 章节归类</div></div>' +
+        '<div class="u"><div class="uk">累计上传耗时</div><div class="uv">' + totalCost.toFixed(1) + '<small> s</small></div>' +
+          '<div class="us">平均 ' + (okSize && totalCost ? (okSize / totalCost).toFixed(1) : '0') + ' MB/s</div></div>' +
+        '<div class="u' + (retry ? ' warn' : '') + '"><div class="uk">失败与重传</div><div class="uv">' + retry + '<small> 次</small></div>' +
+          '<div class="us">' + (retry ? '失败后可重新上传，不影响已落地文件' : '本次上传无失败') + '</div></div>' +
+      '</div>';
+  }
+
+  /* ======================================================================
+     ② 目录扫描
+     ====================================================================== */
+  function renderUnzip() {
+    var s = stat();
+    $('#stBar').innerHTML =
+      searchInput('搜索文件名 / 目录') +
+      selHtml('stFilter', [['', '全部状态'], ['ok', '读取成功'], ['fail', '读取失败']], ST.st) +
+      selHtml('arcFilter', [['', '全部文件夹'], ['Z1', '本次上传'], ['Z0', '第 1 次上传（失败）']], ST.arc) +
+      '<button class="btn sm" id="btnFailOnly">只看失败</button>' +
+      '<button class="btn sm" id="stReset">重置</button>' +
+      '<span class="sp"></span><span class="sum">' + (s.fileTotal
+        ? ('共 <b>' + s.fileTotal + '</b> 个文件 · 成功 <b>' + s.unOk + '</b> · 失败 <b>' + s.unFail + '</b>')
+        : '暂无可读取文件') + '</span>';
+    bindBar();
+
+    if (!ST.files.length) {
+      $('#stBody').innerHTML = emptyState(
+        s.hardUnzip ? '文件夹读取失败，未能得到文件清单' : '等待上传完成',
+        s.hardUnzip
+          ? ((CASE.flow.unzip && CASE.flow.unzip.err) || '文件不可读') + '；建议重新选择文件夹后再扫描'
+          : '上传成功后自动扫描目录，本 Tab 会逐个文件展示读取结果');
+      return;
+    }
+    var kw = matchKw();
+    var list = ST.files.filter(function (x) {
+      if (ST.st && x.unzip.st !== ST.st) return false;
+      if (ST.arc && x.arch !== ST.arc) return false;
+      return kw(x);
+    });
+    var rows = list.map(function (x) {
+      var i = ST.files.indexOf(x) + 1;
+      return '<tr class="' + (x.unzip.st === 'fail' ? 'failrow' : '') + '" data-id="' + esc(x.id) + '">' +
+        '<td class="mono" style="color:var(--t4)">' + i + '</td>' +
+        '<td><div class="fn">' + esc(x.name) + '</div></td>' +
+        '<td class="mono" style="color:var(--t3)">' + esc(x.arch === 'Z0' ? '第 1 次上传（失败）' : '企业申报资料') + '</td>' +
+        '<td class="mono">' + esc(x.size) + '</td>' +
+        '<td style="font-size:11.5px;color:var(--t3)">' + esc(x.path) + '</td>' +
+        '<td>' + (x.unzip.st === 'ok' ? pill('ok', '读取成功') : pill('fail', '读取失败')) + '</td>' +
+        '<td class="whycell">' + (x.unzip.err ? esc(x.unzip.err) : '<span style="color:var(--t4)">—</span>') + '</td>' +
+        '<td>' + (x.unzip.st === 'fail'
+          ? '<span class="view" data-reunzip="' + esc(x.id) + '">重新扫描</span>'
+          : '<span class="view" data-see-parse="' + esc(x.id) + '">看解析结果</span>') + '</td>' +
+      '</tr>';
+    }).join('');
+    $('#stBody').innerHTML = '<table class="pfile ftable"><thead><tr>' +
+      '<th style="width:42px">#</th><th>文件名称</th><th style="width:158px">所属文件夹</th>' +
+      '<th style="width:84px">大小</th><th style="width:210px">所在目录</th>' +
+      '<th style="width:110px">读取状态</th><th>失败原因</th><th style="width:100px">操作</th>' +
+      '</tr></thead><tbody>' + (rows || '<tr><td colspan="8"><div class="empty" style="padding:30px">没有符合条件的文件</div></td></tr>') + '</tbody></table>';
+  }
+
+  /* ======================================================================
+     ③ ch 文件 → rps 归类
+     ====================================================================== */
+  /* ---------------- ③ ch → rps 归类：左固定目录树 + 右企业 ch 文件 ---------------- */
+  function clsFiles() {
+    return ST.files.filter(function (x) { return x.unzip.st === 'ok'; });
+  }
+  function clsModeOf(x) { return x.edited ? 'manual' : (x.low ? 'low' : 'auto'); }
+  function clsCounts() {
+    var n = {}, low = {};
+    DATA.RPS_DIRS.forEach(function (d) { n[d.k] = 0; });
+    clsFiles().forEach(function (x) {
+      n[x.dir] = (n[x.dir] || 0) + 1;
+      if (!x.edited && x.low) low[x.dir] = (low[x.dir] || 0) + 1;
+    });
+    return { n: n, low: low };
+  }
+  function clsExt(x) {
+    var m = /\.([a-z0-9]+)$/i.exec(x.name || '');
+    return m ? m[1].toUpperCase() : '—';
+  }
+  function clsParsePill(x) {
+    if (x.unzip.st !== 'ok') return pill('skip', '未解析');
+    if (x.parse.st === 'ok') return pill('ok', '已解析');
+    if (x.parse.st === 'fail') return pill('fail', '解析失败');
+    return pill('skip', '待解析');
+  }
+
+  function renderClsTree() {
+    var s = stat(), c = clsCounts();
+    var kw = (ST.clsKw || '').toLowerCase();
+    var h = '';
+    h += '<div class="clsnode sp' + (ST.selDir === '' ? ' on' : '') + '" data-dir="">' +
+      '<span class="cnm">全部文件</span><span class="ccount">' + clsFiles().length + '</span></div>' +
+      '<div class="clsnode sp warnnode' + (ST.selDir === '__low' ? ' on' : '') + '" data-dir="__low">' +
+      '<span class="cnm">待确认归类</span><span class="ccount warn">' + s.clLow + '</span></div>' +
+      '<div class="clsdiv"><span>rps 目录结构</span><em>12 个</em></div>';
+    DATA.RPS_DIRS.forEach(function (d) {
+      if (kw && d.t.toLowerCase().indexOf(kw) < 0 && d.k.toLowerCase().indexOf(kw) < 0) return;
+      var n = c.n[d.k] || 0, low = c.low[d.k] || 0;
+      h += '<div class="clsnode clsd' + (ST.selDir === d.k ? ' on' : '') + (n ? '' : ' zero') + '" data-dir="' + d.k + '">' +
+        '<span class="ccode">' + esc(d.k) + '</span>' +
+        '<span class="cnm" title="' + esc(d.t) + '">' + esc(d.t) + '</span>' +
+        (low ? '<span class="cbadge">' + low + '</span>' : '') +
+        '<span class="ccount">' + n + '</span>' +
+      '</div>';
+    });
+    $('#clsTree').innerHTML = h;
+  }
+
+  function renderClsFiles() {
+    var kw = (ST.clsKw || '').toLowerCase();
+    var list = clsFiles().filter(function (x) {
+      if (ST.selDir === '__low') { if (x.edited || !x.low) return false; }
+      else if (ST.selDir) { if (x.dir !== ST.selDir) return false; }
+      if (ST.clsFilter === 'ok' && (x.edited || x.low)) return false;
+      if (ST.clsFilter === 'low' && (x.edited || !x.low)) return false;
+      if (kw) {
+        var hay = (x.name + ' ' + x.ch + ' ' + (DATA.dirText(x.dir) || '')).toLowerCase();
+        if (hay.indexOf(kw) < 0) return false;
+      }
+      return true;
+    });
+    var title = ST.selDir === '__low' ? '待确认归类'
+      : (ST.selDir ? DATA.dirText(ST.selDir) : '全部文件');
+    $('#clsTitle').textContent = title;
+    $('#clsSub').textContent = list.length + ' 个文件' +
+      ((ST.selDir || kw) ? '（已筛选，共 ' + clsFiles().length + ' 个）' : '');
+    var rows = list.map(function (x, ri) {
+      var m = clsModeOf(x);
+      var tag = m === 'manual' ? '<span class="tpill amber">人工调整</span>'
+        : m === 'low' ? '<span class="tpill amber">待确认</span>' : '<span class="tpill green">规则自动</span>';
+      return '<tr class="' + (m === 'low' ? 'lowrow' : '') + '" data-id="' + esc(x.id) + '" draggable="true">' +
+        '<td class="ckcell"><input type="checkbox" data-pick="' + esc(x.id) + '"' + (ST.sel[x.id] ? ' checked' : '') + '></td>' +
+        '<td><div class="fn" title="' + esc(x.name) + '">' + esc(x.name) + '</div>' +
+          '<div class="sub">' + esc(x.ch || '—') + '</div></td>' +
+        '<td class="mono">' + clsExt(x) + '</td>' +
+        '<td class="nowrap">' + esc(x.size) + '</td>' +
+        '<td class="mono">' + (x.page || '—') + '</td>' +
+        '<td>' + clsParsePill(x) + '</td>' +
+        '<td><select data-doc="' + esc(x.id) + '" class="' + (x.edited ? 'edited' : '') + '">' +
+          DATA.RPS_DIRS.map(function (d) {
+            return '<option value="' + d.k + '"' + (d.k === x.dir ? ' selected' : '') + '>' + esc(d.t) + '</option>';
+          }).join('') + '</select></td>' +
+        '<td>' + tag + '</td>' +
+        '<td class="viewcell"><span class="view" data-goto-rule="' + esc(x.ch) + '">关联规则</span>' +
+          (x.edited ? '<span class="view reset" data-reset="' + esc(x.id) + '">撤销</span>' : '') + '</td>' +
+      '</tr>';
+    }).join('');
+
+    $('#clsTable').innerHTML = '<table class="pfile ftable"><thead><tr>' +
+      '<th class="ckcell"><input type="checkbox" id="clsSelAll" title="全选当前列表"></th>' +
+      '<th>文件名称</th><th style="width:64px">类型</th><th style="width:82px">大小</th>' +
+      '<th style="width:58px">页数</th><th style="width:96px">解析状态</th>' +
+      '<th style="width:186px">挂接 rps 目录</th><th style="width:92px">归类方式</th>' +
+      '<th style="width:112px">操作</th>' +
+      '</tr></thead><tbody>' + (rows ||
+        '<tr><td colspan="9"><div class="empty" style="padding:30px">该目录下暂无文件</div></td></tr>') +
+      '</tbody></table>';
+    var sa = $('#clsSelAll');
+    if (sa) sa.checked = list.length > 0 && list.every(function (x) { return ST.sel[x.id]; });
+    paintBatch();
+  }
+
+  function paintBatch() {
+    var n = Object.keys(ST.sel).filter(function (k) { return ST.sel[k]; }).length;
+    var box = $('#clsBatch');
+    if (!box) return;
+    box.classList.toggle('on', n > 0);
+    $('#clsBatchN').textContent = n;
+  }
+
+  function moveFile(id, dir, silent) {
+    var x = findFile(id);
+    if (!x || !dir || x.dir === dir) return false;
+    x.dir = dir; x.edited = true; x.low = false;
+    syncFlow();
+    if (!silent) APP.toast('已把「' + x.name + '」归到 ' + DATA.dirText(dir), 'ok', 2400);
+    return true;
+  }
+
+  function renderClassify() {
+    var s = stat();
+    $('#stBar').style.display = 'none';
+    $('#stBody').classList.add('cls-mode');
+
+    if (!s.unOk) {
+      $('#stBody').classList.remove('cls-mode');
+      $('#stBody').innerHTML = emptyState('暂无可归类的文件',
+        '扫描成功后按 ch 文件名自动归入 rps 目录，识别不到的进入「待确认」');
+      return;
+    }
+
+    var c = clsCounts();
+    var nOk = clsFiles().filter(function (x) { return !x.low || x.edited; }).length;
+    $('#stBody').innerHTML =
+      '<div class="clsgrid">' +
+        '<aside class="clstree">' +
+          '<div class="clstree-hd"><b>RPS 目录</b><span>固定结构 · 12 个</span></div>' +
+          '<div class="clssearch">' + ic('search', 13) +
+            '<input id="clsKw" placeholder="搜索目录 / 文件名" value="' + esc(ST.clsKw || '') + '"></div>' +
+          '<div class="clsseg" id="clsSeg">' +
+            '<button data-cf="all" class="' + (ST.clsFilter === 'all' ? 'on' : '') + '">全部</button>' +
+            '<button data-cf="ok" class="' + (ST.clsFilter === 'ok' ? 'on' : '') + '">已归类 <b>' + nOk + '</b></button>' +
+            '<button data-cf="low" class="' + (ST.clsFilter === 'low' ? 'on' : '') + '">待确认 <b>' + s.clLow + '</b></button>' +
+          '</div>' +
+          '<div class="clstree-bd" id="clsTree"></div>' +
+          '<div class="clstree-ft">' + ic('info', 12) + ' 把右侧文件拖到目录即可改归属</div>' +
+        '</aside>' +
+        '<section class="clsfiles">' +
+          '<div class="clsfiles-hd">' +
+            '<b id="clsTitle">全部文件</b><span class="sub" id="clsSub"></span>' +
+            '<span class="sp"></span>' +
+            '<span class="clsBatch" id="clsBatch">已选 <b id="clsBatchN">0</b> 个 → ' +
+              '<select id="clsBatchDir">' + DATA.RPS_DIRS.map(function (d) {
+                return '<option value="' + d.k + '">' + esc(d.t) + '</option>';
+              }).join('') + '</select>' +
+              '<button class="btn xs primary" id="clsBatchGo">归入</button>' +
+            '</span>' +
+            '<span class="tag t-gray">按 ch 文件名自动归类</span>' +
+          '</div>' +
+          '<div class="clsftable" id="clsTable"></div>' +
+        '</section>' +
+      '</div>';
+
+    renderClsTree();
+    renderClsFiles();
+
+    var kwi = $('#clsKw');
+    if (kwi) kwi.oninput = function () { ST.clsKw = this.value; renderClsTree(); renderClsFiles(); };
+
+    $('#clsSeg').addEventListener('click', function (e) {
+      var b = e.target.closest('[data-cf]');
+      if (!b) return;
+      ST.clsFilter = b.dataset.cf;
+      if (ST.clsFilter !== 'all' && ST.selDir) { ST.selDir = ''; }
+      $$('#clsSeg button').forEach(function (x) { x.classList.toggle('on', x.dataset.cf === ST.clsFilter); });
+      renderClsTree(); renderClsFiles();
+    });
+
+    $('#clsTree').addEventListener('click', function (e) {
+      var node = e.target.closest('.clsnode');
+      if (!node) return;
+      ST.selDir = node.dataset.dir;
+      if (ST.selDir === '__low') ST.clsFilter = 'all';
+      renderClsTree(); renderClsFiles();
+    });
+
+    var go = $('#clsBatchGo');
+    if (go) go.onclick = function () {
+      var dir = $('#clsBatchDir').value;
+      var ids = Object.keys(ST.sel).filter(function (k) { return ST.sel[k]; });
+      if (!ids.length) { APP.toast('请先勾选要归入的文件', 'warn', 2000); return; }
+      var n = 0;
+      ids.forEach(function (id) { if (moveFile(id, dir, true)) n++; });
+      ST.sel = {};
+      renderStage();
+      APP.toast('已把 ' + n + ' 个文件归入 ' + DATA.dirText(dir), 'ok', 2600);
+    };
+  }
+
+  /* ======================================================================
+     ④ PDF 解析
+     ====================================================================== */
+  function renderParse() {
+    var s = stat();
+    var errOpts = [['', '全部失败原因']].concat(PARSE_ERRS.map(function (e) { return [e, e]; }));
+    $('#stBar').innerHTML =
+      searchInput('搜索文件名 / 识别章节') +
+      selHtml('stFilter', [['', '全部解析状态'], ['ok', '解析成功'], ['fail', '解析失败'], ['skip', '未解析（读取失败）']], ST.st) +
+      selHtml('errFilter', errOpts, ST.err) +
+      '<button class="btn sm" id="btnFailOnly">只看失败</button>' +
+      '<button class="btn sm" id="stReset">重置</button>' +
+      '<span class="sp"></span><span class="sum">' + (s.fileTotal
+        ? ('共 <b>' + s.fileTotal + '</b> 个文件 · 成功 <b>' + s.paOk + '</b> · 失败 <b>' + s.paFail + '</b>' + (s.unFail ? ' · 未解析 <b>' + s.unFail + '</b>' : ''))
+        : '暂无可解析文件') + '</span>';
+    bindBar();
+
+    if (!ST.files.length) {
+      $('#stBody').innerHTML = emptyState('等待归类和解析', '前序环节完成后，本 Tab 逐个文件展示 PDF 抽取结果与失败原因');
+      return;
+    }
+    var kw = matchKw();
+    var list = ST.files.filter(function (x) {
+      var st = x.parse.st;
+      if (ST.st && st !== ST.st) return false;
+      if (ST.err && x.parse.err !== ST.err) return false;
+      return kw(x);
+    });
+    var rows = list.map(function (x) {
+      var i = ST.files.indexOf(x) + 1;
+      var st = x.parse.st;
+      var stTag = st === 'ok' ? pill('ok', '解析成功')
+        : st === 'fail' ? pill('fail', '解析失败') : pill('skip', '未解析');
+      var act = st === 'fail' ? '<span class="view" data-reparse="' + esc(x.id) + '">重新解析</span>'
+        : st === 'ok' ? '<span class="view" data-openpdf="' + esc(x.id) + '">查看原文</span>'
+        : '<span class="view" data-see-unzip="' + esc(x.id) + '">看读取结果</span>';
+      return '<tr class="' + (st === 'fail' ? 'failrow' : '') + '" data-id="' + esc(x.id) + '">' +
+        '<td class="mono" style="color:var(--t4)">' + i + '</td>' +
+        '<td><div class="fn">' + esc(x.name) + '</div></td>' +
+        '<td class="mono" style="color:var(--t3)">' + (st === 'skip' ? '—' : x.page) + '</td>' +
+        '<td class="mono" style="color:var(--t3)">' + (st === 'ok' ? x.parse.chars.toLocaleString() : '—') + '</td>' +
+        '<td class="mono" style="color:var(--t3)">' + (st === 'ok' ? x.parse.cost : '—') + '</td>' +
+        '<td>' + stTag + '</td>' +
+        '<td class="whycell' + (st === 'skip' ? ' mute' : '') + '">' +
+          (x.parse.err ? esc(x.parse.err) : '<span style="color:var(--t4)">—</span>') + '</td>' +
+        '<td>' + act + '</td>' +
+      '</tr>';
+    }).join('');
+    $('#stBody').innerHTML = '<table class="pfile ftable"><thead><tr>' +
+      '<th style="width:42px">#</th><th>文件名称</th><th style="width:64px">页数</th>' +
+      '<th style="width:96px">提取字符</th><th style="width:84px">解析耗时</th>' +
+      '<th style="width:110px">解析状态</th><th>失败原因</th><th style="width:100px">操作</th>' +
+      '</tr></thead><tbody>' + (rows || '<tr><td colspan="8"><div class="empty" style="padding:30px">没有符合条件的文件</div></td></tr>') + '</tbody></table>';
+  }
+
+  /* ---------------- 筛选条事件 ---------------- */
+  function bindBar() {
+    var kw = $('#stKw');
+    if (kw) {
+      kw.addEventListener('input', function () {
+        ST.kw = this.value;
+        renderStage(true);
+      });
+    }
+    var f = $('#stFilter');
+    if (f) f.onchange = function () { ST.st = this.value; renderStage(true); };
+    var a = $('#arcFilter');
+    if (a) a.onchange = function () { ST.arc = this.value; renderStage(true); };
+    var m = $('#modeFilter');
+    if (m) m.onchange = function () { ST.mode = this.value; renderStage(true); };
+    var d = $('#dirFilter');
+    if (d) d.onchange = function () { ST.dir = this.value; renderStage(true); };
+    var e = $('#errFilter');
+    if (e) e.onchange = function () { ST.err = this.value; renderStage(true); };
+    var r = $('#stReset');
+    if (r) r.onclick = function () {
+      ST.kw = ''; ST.st = ''; ST.dir = ''; ST.mode = ''; ST.err = ''; ST.arc = '';
+      renderStage();
+    };
+    var fo = $('#btnFailOnly');
+    if (fo) fo.onclick = function () {
+      ST.st = ST.st === 'fail' ? '' : 'fail';
+      renderStage();
+    };
+  }
+
+  function renderStage(keepFocus) {
+    $('#stBar').style.display = ST.stage === 'classify' ? 'none' : '';
+    $('#stBody').classList.toggle('cls-mode', ST.stage === 'classify');
+    var map = { upload: renderUpload, unzip: renderUnzip, classify: renderClassify, parse: renderParse };
+    (map[ST.stage] || renderUpload)();
+    renderStabs();
+    if (keepFocus) {
+      var el = $('#stKw');
+      if (el && document.activeElement !== el) {
+        el.focus();
+        try { el.setSelectionRange(el.value.length, el.value.length); } catch (err) {}
+      }
+    }
+  }
+
+  /* ---------------- 切换环节 ---------------- */
+  function setStage(k) {
+    ST.stage = k;
+    ST.kw = ''; ST.st = ''; ST.dir = ''; ST.mode = ''; ST.err = ''; ST.arc = '';
+    renderStage();
+    try { history.replaceState(null, '', location.pathname + '?case=' + encodeURIComponent(CASE.acceptNo) + '&stage=' + k); } catch (e) {}
+  }
+  $('#stabs').addEventListener('click', function (e) {
+    var b = e.target.closest('.stab');
+    if (b && b.dataset.stage !== ST.stage) setStage(b.dataset.stage);
+  });
+
+  /* ---------------- 表格内操作 ---------------- */
+  function findFile(id) {
+    return ST.files.filter(function (x) { return x.id === id; })[0];
+  }
+  function syncFlow() {
+    var f = CASE.flow || {};
+    var s = stat();
+    if (f.classify && (f.classify.st === 'done' || f.classify.st === 'fail')) {
+      f.classify.low = s.clLow;
+      f.classify.manual = s.clManual;
+    }
+    if (f.parse && (f.parse.st === 'done' || f.parse.st === 'fail')) {
+      f.parse.ok = s.paOk;
+      f.parse.failN = s.paFail;
+      f.parse.st = s.paFail ? 'fail' : 'done';
+      if (!s.paFail) { delete f.parse.err; delete f.parse.errMore; }
+    }
+    if (f.unzip && f.unzip.st !== 'pending' && f.unzip.st !== 'running') {
+      f.unzip.failN = s.unFail;
+      f.unzip.files = s.unOk;
+      if (f.unzip.st !== 'fail') f.unzip.st = s.unFail ? 'warn' : 'done';
+      if (s.unFail) {
+        f.unzip.err = s.unFail + ' 个文件读取失败：文件损坏或无读取权限';
+      } else { delete f.unzip.err; delete f.unzip.errMore; }
+    }
+    try { DATA.saveFlow(CASE.acceptNo, CASE.flow); } catch (e) {}
+  }
+
+  $('#stBody').addEventListener('change', function (e) {
+    if (e.target.id === 'clsSelAll') {
+      var on = e.target.checked;
+      $$('#clsTable tbody tr[data-id]').forEach(function (tr) {
+        ST.sel[tr.dataset.id] = on;
+        var cb = tr.querySelector('[data-pick]'); if (cb) cb.checked = on;
+      });
+      paintBatch();
+      return;
+    }
+    var pk = e.target.closest ? e.target.closest('[data-pick]') : null;
+    if (pk) { ST.sel[pk.dataset.pick] = pk.checked; paintBatch(); return; }
+    var sel = e.target.closest('select[data-doc]');
+    if (!sel) return;
+    var x = findFile(sel.dataset.doc);
+    if (!x) return;
+    x.dir = sel.value;
+    x.edited = true;
+    x.low = false;
+    sel.classList.add('edited');
+    syncFlow();
+    renderStage();
+    APP.toast('已将 ' + x.name + ' 调整到 ' + DATA.dirText(x.dir) + '，归类节点的人工调整数已更新', 'ok', 2600);
+  });
+
+  /* 归类页拖拽：文件行 → 左侧 rps 目录（只绑一次） */
+  (function bindClsDrag() {
+    var sb = $('#stBody');
+    sb.addEventListener('dragstart', function (e) {
+      var tr = e.target.closest ? e.target.closest('tr[data-id]') : null;
+      if (!tr) return;
+      if (!tr.closest('.clsftable')) return;
+      e.dataTransfer.setData('text/plain', tr.dataset.id);
+      e.dataTransfer.effectAllowed = 'move';
+      tr.classList.add('dragging');
+    });
+    sb.addEventListener('dragend', function (e) {
+      var tr = e.target.closest ? e.target.closest('tr[data-id]') : null;
+      if (tr) tr.classList.remove('dragging');
+      $$('.clsnode.over').forEach(function (n) { n.classList.remove('over'); });
+    });
+    sb.addEventListener('dragover', function (e) {
+      var node = e.target.closest ? e.target.closest('.clstree .clsnode.clsd') : null;
+      if (!node) return;
+      e.preventDefault();
+      node.classList.add('over');
+    });
+    sb.addEventListener('dragleave', function (e) {
+      var node = e.target.closest ? e.target.closest('.clstree .clsnode.clsd') : null;
+      if (node) node.classList.remove('over');
+    });
+    sb.addEventListener('drop', function (e) {
+      var node = e.target.closest ? e.target.closest('.clstree .clsnode.clsd') : null;
+      if (!node) return;
+      e.preventDefault();
+      node.classList.remove('over');
+      if (moveFile(e.dataTransfer.getData('text/plain'), node.dataset.dir)) { renderStage(); }
+    });
+  })();
+
+  $('#stBody').addEventListener('click', function (e) {
+    var t = e.target;
+
+    var reup = t.closest('[data-reup]');
+    if (reup) {
+      var z = ST.archives.filter(function (a) { return a.id === reup.dataset.reup; })[0];
+      if (z) {
+        z.st = 'ok'; z.err = ''; z.files = 88; z.cost = '11.8s';
+        renderStabs(); renderStage();
+        APP.toast('已重新上传：' + z.name.replace('（第 1 次上传）', ''), 'ok', 2600);
+      }
+      return;
+    }
+    var see = t.closest('[data-see]');
+    if (see) { setStage('unzip'); return; }
+
+    var reun = t.closest('[data-reunzip]');
+    if (reun) {
+      var u = findFile(reun.dataset.reunzip);
+      if (u) {
+        u.unzip.st = 'ok'; u.unzip.err = '';
+        u.parse.st = 'ok'; u.parse.err = '';
+        syncFlow(); renderStabs(); renderStage();
+        APP.toast('已重新扫描：' + u.name, 'ok', 2400);
+      }
+      return;
+    }
+    var sp = t.closest('[data-see-parse]');
+    if (sp) { setStage('parse'); return; }
+
+    var rp = t.closest('[data-reparse]');
+    if (rp) {
+      var p = findFile(rp.dataset.reparse);
+      if (p) {
+        p.parse.st = 'ok'; p.parse.err = '';
+        syncFlow(); renderStabs(); renderStage();
+        APP.toast('已重新解析：' + p.name + '，成功抽取 ' + p.page + ' 页', 'ok', 2600);
+      }
+      return;
+    }
+    var op = t.closest('[data-openpdf]');
+    if (op) {
+      var o = findFile(op.dataset.openpdf);
+      APP.toast('原文预览：' + (o ? o.name : '') + '（演示环境不打开 PDF 阅读器）', 'info', 2400);
+      return;
+    }
+    var su = t.closest('[data-see-unzip]');
+    if (su) { setStage('unzip'); return; }
+
+    var gr = t.closest('[data-goto-rule]');
+    if (gr) {
+      var ch = gr.dataset.gotoRule || '';
+      var rid = ch.indexOf('ch1.1') >= 0 ? 'REG-说明书-004' :
+        ch.indexOf('ch6.1') >= 0 ? 'REG-技术要求-009' :
+        ch.indexOf('ch3.2') >= 0 ? 'REG-临床-006' : '';
+      location.href = './08-发补智能体.html?case=' + encodeURIComponent(CASE.acceptNo) +
+        '&tab=rules' + (rid ? '&rid=' + encodeURIComponent(rid) : '');
+    }
+  });
+
+  /* ---------------- 启动 ---------------- */
+  loadCase();
+  renderCasebar();
+  if (!ST.stage) {
+    /* 默认落在第一个出问题的环节，方便排查 */
+    var s0 = stat();
+    ST.stage = s0.hardUnzip || s0.unFail ? 'unzip'
+      : s0.paFail ? 'parse'
+      : s0.upFail ? 'upload'
+      : s0.clLow ? 'classify' : 'parse';
+  }
+  if (!STAGES.some(function (g) { return g.k === ST.stage; })) ST.stage = 'parse';
+  renderStage();
+
+  window.__PR = { ST: ST, setStage: setStage, stat: stat, CASE: CASE };
+})();
+</script>
+</body>
+</html>

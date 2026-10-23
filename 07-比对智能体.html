@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>比对智能体 · 结果核对 · 发补智能体原型 v18</title>
+<link rel="stylesheet" href="./assets/style.css">
+</head>
+<body class="fit">
+<div class="shell">
+  <header class="topbar" id="topbar"></header>
+  <aside class="side" id="side"></aside>
+
+  <main class="content">
+    <div class="page-head">
+      <div>
+        <div class="page-title"><span class="dot"></span>比对智能体 · 结果核对</div>
+        <div class="page-sub">比对智能体的输出<b>完全可信、无需人工复核</b>；本页用于从发补意见草稿一键回溯差异条目及其原文依据</div>
+      </div>
+      <div class="right">
+        <a class="btn" href="./01-任务列表.html">← 返回任务列表</a>
+        <a class="btn" href="./08-发补智能体.html?case=CQX2600312&amp;tab=rules" id="btnRules">进入规则校验</a>
+        <a class="btn primary" href="./08-发补智能体.html?case=CQX2600312&amp;tab=draft" id="btnDraft">返回发补意见草稿</a>
+      </div>
+    </div>
+
+    <div class="casebar" id="casebar"></div>
+
+    <div class="rulebar" id="cmpbar"></div>
+
+    <div class="cmpwrap" id="cmpwrap">
+      <section class="wbc" id="listCard">
+        <div class="wbc-hd">
+          <h4>差异清单</h4>
+          <span class="sub" id="listSub"></span>
+          <div class="right"><button class="btn xs" data-pop="diffs" title="在新窗口打开差异清单，便于分屏">一键弹出</button></div>
+        </div>
+        <div class="rfilter">
+          <div class="fsearch"><input id="fKw" placeholder="搜索比对项 / 差异内容" autocomplete="off"></div>
+          <span class="rfchip on" data-st="">全部<b id="nAll">0</b></span>
+          <span class="rfchip" data-st="diff">差异<b id="nDiff">0</b></span>
+          <span class="rfchip" data-st="same">一致<b id="nSame">0</b></span>
+          <span class="rfchip" data-st="in">已并入草稿<b id="nIn">0</b></span>
+        </div>
+        <div class="wbc-bd" id="listBody" style="padding:9px 10px"></div>
+      </section>
+
+      <section class="wbc" id="pdfCard">
+        <div class="wbc-hd">
+          <h4>企业申报材料</h4>
+          <span class="sub">原文 PDF · 可溯源对照</span>
+          <div class="right"><button class="btn xs" data-pop="pdf" title="在新窗口打开原文 PDF，便于分屏">一键弹出</button></div>
+        </div>
+        <div class="wbc-bd flush" id="pdfBody" style="padding:0"></div>
+      </section>
+    </div>
+
+    <div class="infobar i-gray page-note" style="margin:12px 0 0">
+      说明：本页为交互原型，比对结果为演示数据。比对智能体输出<b>不经人工复核</b>，草稿中的「比对依据 ↗」直接跳回本页对应条目并高亮原文；
+      两侧原文均可点击切换，定位到具体段落与语句。
+    </div>
+  </main>
+</div>
+
+<div id="toastBox"></div>
+
+<script src="./assets/app.js"></script>
+<script src="./assets/data.js"></script>
+<script>
+(function () {
+  'use strict';
+  var $ = APP.$, $$ = APP.$$, esc = APP.esc, ic = APP.ic;
+
+  function qs(k) {
+    var m = new RegExp('[?&]' + k + '=([^&]*)').exec(location.search);
+    return m ? decodeURIComponent(m[1]) : '';
+  }
+
+  var CASE = DATA.CASES.filter(function (c) { return c.acceptNo === qs('case'); })[0] ||
+    DATA.CASES.filter(function (c) { return c.acceptNo === 'CQX2600312'; })[0] || DATA.CASES[0];
+
+  var EMBED = qs('embed');
+  var ST = {
+    items: JSON.parse(JSON.stringify(DATA.AI_COMPARE)),
+    active: '',
+    side: 'A',
+    kw: '',
+    st: '',
+    pdf: null,
+    page: 0,
+    zoom: 1
+  };
+
+  APP.renderTop({ crumb: ['审评工作台', '发补智能体', '比对智能体结果'] });
+  APP.renderSide('rules');
+  $('#btnRules').href = './05-规则校验.html?case=' + encodeURIComponent(CASE.acceptNo);
+  $('#btnDraft').href = './02-发补意见草稿.html?case=' + encodeURIComponent(CASE.acceptNo);
+
+  /* ---------------- 案卷条 / 统计 ---------------- */
+  $('#casebar').innerHTML =
+    '<div class="cb-main">' +
+      '<div class="cb-name">' + esc(CASE.product) +
+        '<span class="badge ' + ((DATA.STATUS[CASE.status] || {}).tone || 'b-gray') + '"><span class="bd"></span>' + esc(CASE.status) + '</span>' +
+        '<span class="pid">' + esc(CASE.acceptNo) + '</span></div>' +
+      '<div class="cb-meta">' +
+        '<span>申请人 <b>' + esc(CASE.ent) + '</b></span>' +
+        '<span>器械品类 <b>' + esc((CASE.devCat || []).slice(1, 3).join(' › ') || CASE.cat) + '</b></span>' +
+        '<span>申请类型 <b>' + esc(CASE.applyType || '-') + '</b></span>' +
+        '<span>申请事项 <b>' + esc(CASE.applyItem || '-') + '</b></span>' +
+      '</div>' +
+    '</div>' +
+    '<div class="cb-right">' +
+      '<span class="tag t-gray">比对智能体 · 免复核</span>' +
+      '<span class="tag t-gray">运行于 ' + esc((CASE.flow && CASE.flow.rule && CASE.flow.rule.at) || '—') + '</span>' +
+    '</div>';
+
+  function stat() {
+    var s = { total: ST.items.length, diff: 0, same: 0, inDraft: 0, wait: 0 };
+    ST.items.forEach(function (x) {
+      if (x.same) s.same++; else s.diff++;
+      if (!x.same && x.status === '已采纳') s.inDraft++;
+      if (!x.same && x.status === '待采纳') s.wait++;
+    });
+    return s;
+  }
+
+  function renderStats() {
+    var s = stat();
+    $('#cmpbar').innerHTML =
+      '<div class="rsum">比对项 <b>' + s.total + '</b></div>' +
+      '<div class="rsum hot">差异 <b>' + s.diff + '</b></div>' +
+      '<div class="rsum ok">一致 <b>' + s.same + '</b></div>' +
+      '<div class="rsum">已并入草稿 <b>' + s.inDraft + '</b></div>' +
+      '<div class="rsum wait">待并入 <b>' + s.wait + '</b></div>' +
+      '<div class="right">' +
+        '<button class="btn sm" id="btnBackDraft">返回发补意见草稿</button>' +
+        '<a class="btn sm primary" href="./08-发补智能体.html?case=' + encodeURIComponent(CASE.acceptNo) + '&tab=rules">继续规则校验</a>' +
+      '</div>';
+    var b = $('#btnBackDraft');
+    if (b) b.onclick = function () { location.href = './08-发补智能体.html?case=' + encodeURIComponent(CASE.acceptNo) + '&tab=draft'; };
+  }
+
+  /* ---------------- 差异清单 ---------------- */
+  function filtered() {
+    var kw = ST.kw.trim().toLowerCase();
+    return ST.items.filter(function (x) {
+      if (ST.st === 'diff' && x.same) return false;
+      if (ST.st === 'same' && !x.same) return false;
+      if (ST.st === 'in' && !(x.status === '已采纳')) return false;
+      if (kw) {
+        var hay = [x.id, x.item, x.aVal, x.bVal, x.conclusion].join(' ').toLowerCase();
+        if (hay.indexOf(kw) < 0) return false;
+      }
+      return true;
+    });
+  }
+
+  function statusOf(x) {
+    if (x.same) return '<span class="tag t-gray">一致 · 无需处理</span>';
+    if (x.status === '已采纳') return '<span class="tag t-green">已并入 ' + esc(x.inDraft || '草稿') + '</span>';
+    return '<span class="tag t-amber">待并入</span>';
+  }
+
+  function itemHtml(x) {
+    var on = x.id === ST.active;
+    return '<div class="cmpitem' + (on ? ' on' : '') + '" data-id="' + esc(x.id) + '">' +
+      '<div class="ci-h">' +
+        '<span class="cid">' + esc(x.id) + '</span>' +
+        '<span class="cname">' + esc(x.item) + '</span>' +
+        statusOf(x) +
+      '</div>' +
+      '<div class="ci-vs">' +
+        '<div class="cside">' +
+          '<span class="cl">' + esc(x.aLabel) + '</span>' +
+          '<span class="cv' + (ST.side === 'A' && on ? ' on' : '') + '">' + esc(x.aVal) + '</span>' +
+        '</div>' +
+        '<span class="cneq">' + (x.same ? '=' : '≠') + '</span>' +
+        '<div class="cside">' +
+          '<span class="cl">' + esc(x.bLabel) + '</span>' +
+          '<span class="cv' + (ST.side === 'B' && on ? ' on' : '') + '">' + esc(x.bVal) + '</span>' +
+        '</div>' +
+      '</div>' +
+      '<div class="ci-c">' + esc(x.conclusion) + '</div>' +
+      '<div class="ci-f">' +
+        '<button class="btn xs" data-side="A" data-id="' + esc(x.id) + '">' + ic('book', 11) + ' A 侧原文</button>' +
+        '<button class="btn xs" data-side="B" data-id="' + esc(x.id) + '">' + ic('book', 11) + ' B 侧原文</button>' +
+        '<span class="sp"></span>' +
+        (x.same ? '<span class="muted">两侧一致，可对照原文确认</span>' : '') +
+      '</div>' +
+    '</div>';
+  }
+
+  function renderList() {
+    var list = filtered();
+    var box = $('#listBody');
+    $('#listSub').textContent = ST.items.length + ' 项 · 差异 ' + stat().diff + ' · 一致 ' + stat().same;
+    $('#nAll').textContent = ST.items.length;
+    $('#nDiff').textContent = stat().diff;
+    $('#nSame').textContent = stat().same;
+    $('#nIn').textContent = stat().inDraft;
+    box.innerHTML = list.length ? list.map(itemHtml).join('') :
+      '<div class="empty" style="padding:36px 10px"><div class="eic">' + ic('search', 20) + '</div>' +
+      '<div class="et">没有符合条件的比对项</div><div class="es">试试清空搜索或切换状态</div></div>';
+  }
+
+  /* ---------------- 原文 PDF ---------------- */
+  function setPdf(ev, x, side) {
+    ST.pdf = { sec: ev.sec, para: ev.para, quote: ev.quote, from: x.id, item: x.item, side: side, label: side === 'A' ? x.aLabel : x.bLabel };
+    var idx = -1;
+    DATA.READER.forEach(function (s, i) { if (s.sec === ev.sec) idx = i; });
+    ST.page = idx >= 0 ? idx : 0;
+    renderPdf();
+  }
+
+  function renderPdf() {
+    var box = $('#pdfBody');
+    if (!box) return;
+    var secs = DATA.READER || [];
+    if (!ST.pdf) {
+      box.innerHTML = '<div class="pdfempty">' + ic('doc', 22) +
+        '<div style="margin-top:8px">尚未选择比对项</div>' +
+        '<div style="font-size:11.5px;margin-top:4px">点击左侧任一条目，这里显示对应一侧的申报材料原文并高亮差异句。</div></div>';
+      return;
+    }
+    var idx = Math.min(Math.max(ST.page, 0), secs.length - 1);
+    var sec = secs[idx];
+    if (!sec) { box.innerHTML = '<div class="pdfempty">原文未载入</div>'; return; }
+
+    var hit = ST.pdf.sec === sec.sec;
+    var paras = sec.paras.map(function (p) {
+      var isT = hit && p.n === ST.pdf.para;
+      var txt = esc(p.text);
+      if (isT && ST.pdf.quote) {
+        var q = esc(ST.pdf.quote);
+        if (txt.indexOf(q) >= 0) txt = txt.replace(q, '<mark>' + q + '</mark>');
+      }
+      return '<div class="pdf-para' + (isT ? ' hl' : '') + '"><span class="pn">' + esc(p.n) + '</span>' + txt + '</div>';
+    }).join('');
+
+    box.innerHTML = '<div class="pdfwrap">' +
+      '<div class="pdftool">' +
+        '<span style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;color:var(--t2)" title="' + esc(sec.sec + '.pdf') + '">' + esc(sec.sec) + '.pdf</span>' +
+        '<span class="sp"></span>' +
+        '<div class="pg"><button data-act="pgPrev"' + (idx <= 0 ? ' disabled' : '') + '>‹</button>' +
+          '<span>第 ' + (idx + 1) + ' / ' + secs.length + ' 页</span>' +
+          '<button data-act="pgNext"' + (idx >= secs.length - 1 ? ' disabled' : '') + '>›</button></div>' +
+        '<div class="zl"><button data-act="zoomOut">−</button><span>' + Math.round(ST.zoom * 100) + '%</span><button data-act="zoomIn">+</button></div>' +
+      '</div>' +
+      '<div class="pdfstage"><div class="pdfpage" style="transform:scale(' + ST.zoom + ')">' +
+        '<div class="pdfpage-hd"><b>' + esc(CASE.product) + '</b><span>' + esc(sec.sec) + '</span></div>' +
+        '<div class="pdfpage-bd">' + paras + '</div>' +
+        '<div class="pdfpage-ft">第 ' + (idx + 1) + ' 页 / 共 ' + secs.length + ' 页（演示节选）</div>' +
+      '</div></div>' +
+      '<div class="pdfbar">定位自 <b>' + esc(ST.pdf.from) + '</b> · ' + esc(ST.pdf.item) +
+        ' · ' + esc(ST.pdf.side) + ' 侧（' + esc(ST.pdf.label) + '）' +
+        (hit ? '' : ' · <a data-act="backHit">回到命中段落</a>') +
+      '</div>' +
+    '</div>';
+  }
+
+  /* ---------------- 选择 / 交互 ---------------- */
+  function select(id, side) {
+    var x = ST.items.filter(function (i) { return i.id === id; })[0];
+    if (!x) return;
+    ST.active = id;
+    if (side) ST.side = side;
+    renderList();
+    var ev = ST.side === 'B' ? (x.evB || x.evA) : (x.evA || x.evB);
+    if (ev) setPdf(ev, x, ST.side);
+  }
+
+  $('#listBody').addEventListener('click', function (e) {
+    var sd = e.target.closest('[data-side]');
+    if (sd) {
+      ST.side = sd.dataset.side;
+      select(sd.dataset.id, sd.dataset.side);
+      return;
+    }
+    var it = e.target.closest('.cmpitem');
+    if (it) { ST.side = 'A'; select(it.dataset.id); }
+  });
+
+  $('#fKw').addEventListener('input', function () { ST.kw = this.value; renderList(); });
+  $$('.rfchip').forEach(function (c) {
+    c.addEventListener('click', function () {
+      ST.st = c.dataset.st;
+      $$('.rfchip').forEach(function (o) { o.classList.toggle('on', o === c); });
+      renderList();
+    });
+  });
+
+  $('#pdfBody').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-act]');
+    if (!b) return;
+    var a = b.dataset.act;
+    var secs = DATA.READER || [];
+    if (a === 'pgPrev') { ST.page = Math.max(0, ST.page - 1); renderPdf(); return; }
+    if (a === 'pgNext') { ST.page = Math.min(secs.length - 1, ST.page + 1); renderPdf(); return; }
+    if (a === 'zoomIn') { ST.zoom = Math.min(1.4, +(ST.zoom + 0.1).toFixed(2)); renderPdf(); return; }
+    if (a === 'zoomOut') { ST.zoom = Math.max(0.7, +(ST.zoom - 0.1).toFixed(2)); renderPdf(); return; }
+    if (a === 'backHit') {
+      var i = -1;
+      secs.forEach(function (s, k) { if (s.sec === ST.pdf.sec) i = k; });
+      ST.page = i < 0 ? 0 : i; renderPdf(); return;
+    }
+  });
+
+  /* ---------------- 一键弹出 / 嵌入 ---------------- */
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-pop]');
+    if (!b) return;
+    var kind = b.dataset.pop;
+    var map = { diffs: { el: $('#listCard'), t: '差异清单' }, pdf: { el: $('#pdfCard'), t: '企业申报材料 · 原文 PDF' } };
+    var c = map[kind];
+    if (!c || !c.el) return;
+    APP.openFloat({ el: c.el, title: c.t, sub: CASE.acceptNo + ' · ' + CASE.product,
+      width: kind === 'pdf' ? 640 : 820, height: 660 });
+  });
+
+  function applyEmbed() {
+    if (!EMBED) return;
+    document.body.classList.add('embed', 'embed-' + EMBED);
+  }
+
+  /* ---------------- 启动 ---------------- */
+  renderStats();
+  renderList();
+  renderPdf();
+
+  var d = qs('diff'), sd0 = qs('side') || 'A';
+  if (d) {
+    setTimeout(function () {
+      select(d, sd0);
+      var el = $('#listBody .cmpitem.on');
+      if (el) el.scrollIntoView({ block: 'center', behavior: 'auto' });
+      APP.toast('已定位到比对条目 ' + d + '（' + sd0 + ' 侧原文）', 'ok', 2600);
+    }, 220);
+  } else if (ST.items.length) {
+    select(ST.items[0].id, 'A');
+  }
+  applyEmbed();
+
+  window.__CMP = { ST: ST, select: select, renderList: renderList, renderPdf: renderPdf, stat: stat };
+})();
+</script>
+</body>
+</html>
