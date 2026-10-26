@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>任务列表 · 发补智能体原型 v18</title>
+<title>任务列表 · 发补智能体原型 v22</title>
 <link rel="stylesheet" href="./assets/style.css">
 </head>
 <body>
@@ -48,7 +48,6 @@
       <div class="batchbar" id="batchBar">
         <span class="bn">已选 <b id="bnNum">0</b> 项</span>
         <span class="sp"></span>
-        <button class="btn sm" id="bnRun">批量开始处理</button>
         <button class="btn sm" id="bnDel">批量删除</button>
         <button class="btn sm gh" id="bnClear">清除选择</button>
       </div>
@@ -111,7 +110,7 @@
   function filtered() {
     var kw = S.kw.trim().toLowerCase();
     return DATA.CASES.filter(function (c) {
-      if (S.devTop && (!c.devCat || c.devCat[0] !== S.devTop)) return false;
+      if (S.devTop && !devMatch(c)) return false;
       if (S.applyType && c.applyType !== S.applyType) return false;
       if (S.prodClass && c.productClass !== S.prodClass) return false;
       if (S.status && c.status !== S.status) return false;
@@ -230,11 +229,17 @@
 
   function devName(c) {
     if (!c.devCat || !c.devCat.length) return c.cat || '—';
-    return c.devCat[2].replace(/^[\d\-]+\s+/, '');
+    var last = c.devCat[c.devCat.length - 1];
+    return String(last).replace(/^[\d\-]+\s+/, '');
   }
   function devParent(c) {
     if (!c.devCat || c.devCat.length < 2) return '';
-    return c.devCat[1].replace(/^[\d\-]+\s+/, '');
+    return String(c.devCat[1]).replace(/^[\d\-]+\s+/, '');
+  }
+  function devMatch(c) {
+    if (!c.devCat || !c.devCat.length) return false;
+    var v = String(c.devCat[0]);
+    return v === S.devTop || v.slice(0, 2) === String(S.devTop).slice(0, 2);
   }
 
   var SEL = {};
@@ -466,15 +471,6 @@
     syncBatch();
   });
   $('#bnClear').onclick = selClear;
-  $('#bnRun').onclick = function () {
-    var nos = Object.keys(SEL).filter(function (no) {
-      var c = findCase(no); return c && !DATA.flowOf(c).done;
-    });
-    if (!nos.length) { APP.toast('所选任务的处理节点都已完成，无需再处理', 'warn', 2400); return; }
-    nos.forEach(function (no) { runTask(no); });
-    APP.toast('已开始处理 ' + nos.length + ' 个任务', 'ok', 2400);
-    selClear();
-  };
   $('#bnDel').onclick = function () {
     var nos = Object.keys(SEL);
     if (!nos.length) return;
@@ -605,8 +601,8 @@
           '<select class="sel" id="nApplyType"><option value="">请选择</option>' +
             DATA.ENUM.applyType.map(function (v) { return '<option>' + esc(v) + '</option>'; }).join('') +
           '</select></div>' +
-        '<div class="fi span2"><label>器械品类 <span class="req">*</span><span class="k">四级联动 · 支持模糊搜索，需选到第四级</span></label>' +
-          '<div id="nDevCat"></div></div>' +
+        '<div class="fi span2"><label>器械品类 <span class="req">*</span><span class="k">手工填写品类名称或编码，如：14-08-02 输液器、输血器材</span></label>' +
+          '<input class="inp" id="nDevCat" placeholder="请输入器械品类" autocomplete="off"></div>' +
         '<div class="fi"><label>申请事项 <span class="req">*</span></label>' +
           '<select class="sel" id="nApplyItem"><option value="">请选择</option>' +
             DATA.ENUM.applyItem.map(function (v) { return '<option>' + esc(v) + '</option>'; }).join('') +
@@ -650,16 +646,15 @@
   }
 
   function initStep1(m) {
-    CASCADE.create($('#nDevCat', m), {
-      tree: DATA.DEVICE_CAT,
-      levels: 4,
-      placeholder: '如输入“输液器”“体温计”搜索，或逐级选择',
-      onChange: function (path) {
-        NW.devCat = path.filter(Boolean);
-        var el = $('#nDevCat', m);
-        if (el) el.classList.remove('bad');
-      }
-    });
+    /* 器械品类：手工填写（v20 起不再用四级联动） */
+    var dci = $('#nDevCat', m);
+    if (dci) {
+      dci.addEventListener('input', function () {
+        var v = dci.value.trim();
+        NW.devCat = v ? [v] : [];
+        dci.classList.remove('bad');
+      });
+    }
 
     function chipGroup(sel, key) {
       var box = $(sel, m);
@@ -707,8 +702,8 @@
     if (!accept) errs.push('请填写「受理号」');
     if (!applicant) errs.push('请填写「申请人」');
     if (!product) errs.push('请填写「产品名称」');
-    if (!NW.devCat || NW.devCat.length < 4) {
-      errs.push('请选择完整的「器械品类」（需逐级选到第四级）');
+    if (!NW.devCat || !NW.devCat.length) {
+      errs.push('请填写「器械品类」');
       var dc = $('#nDevCat', m); if (dc) dc.classList.add('bad');
     }
     if (!applyType) errs.push('请选择「申请类型」');

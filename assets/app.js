@@ -55,7 +55,7 @@
   /* 规则校验 / 发补意见草稿是「发补智能体」下的两个 Tab，归到同一菜单 */
   var NAV_ALIAS = {
     list: 'tasks', tasks: 'tasks', parse: 'tasks',
-    rules: 'fb', draft: 'fb', fb: 'fb', hist: 'fb'
+    rules: 'fb', draft: 'fb', fb: 'fb', hist: 'fb', law: 'fb'
   };
 
   /* ---------------- 顶栏 ---------------- */
@@ -71,7 +71,7 @@
         '<path d="M2.6 4.4h10.8M2.6 8h10.8M2.6 11.6h10.8"/></svg>' +
       '</button>' +
       '<a class="brand" href="./01-任务列表.html">' +
-        '<span class="logo">发补</span>发补智能体<em>· 原型 v18</em>' +
+        '<span class="logo">发补</span>发补智能体<em>· 原型 v22</em>' +
       '</a>' +
       '<div class="crumb">' + crumb + '</div>' +
       '<div class="topbar-right">' +
@@ -211,6 +211,46 @@
       p.style.top = (TOP0 + GAP + i * (h + GAP)) + 'px';
       p.style.zIndex = ++zTop;
     });
+  }
+
+  /* 某个模块被「一键弹出」后，原本给它留的列还空在那里 → 剩下的列必须重新分配宽度，
+     把腾出来的空间吃掉，否则会出现「3 列变 2 列、右边一长条空白」的情况。
+
+     用法：popFill(wrap, [{key:'left', el:dom, flex:false}, {key:'mid', el:dom, flex:true}], poppedKeys)
+     - 未弹出任何模块：清掉内联列宽，完全交回 CSS（响应式断点照旧生效）
+     - 只剩 1 列：直接 1fr 铺满
+     - 剩下 2 列以上：有弹性列就把空余全给它；全是固定列则按原宽度比例放大铺满 */
+  function popFill(wrap, cols, popped) {
+    if (!wrap) return;
+    popped = popped || [];
+    if (!cols) cols = [];
+    if (!popped.length) { wrap.style.gridTemplateColumns = ''; wrap.__baseW = null; return; }
+    /* stay:true 的列代表「列本身还在，只是里面的模块被弹出去了」（如 05 页的中间列） */
+    var alive = cols.filter(function (c) { return c.el && (c.stay || popped.indexOf(c.key) < 0); });
+    if (alive.length <= 1) { wrap.style.gridTemplateColumns = 'minmax(0,1fr)'; return; }
+    /* 基准宽度只在「没有任何模块弹出」时测一次，避免在已被拉伸的布局上二次测量 */
+    if (!wrap.__baseW) {
+      wrap.__baseW = {};
+      cols.forEach(function (c) {
+        if (c.el) wrap.__baseW[c.key] = Math.round(c.el.getBoundingClientRect().width) || 240;
+      });
+    }
+    var flexN = alive.filter(function (c) { return c.flex; }).length;
+    var tpl;
+    if (flexN === 1) {
+      tpl = alive.map(function (c) {
+        return c.flex ? 'minmax(0,1fr)' : (wrap.__baseW[c.key] || 260) + 'px';
+      });
+    } else {
+      var sum = alive.reduce(function (s, c) { return s + (wrap.__baseW[c.key] || 260); }, 0);
+      tpl = alive.map(function (c) {
+        return 'minmax(0,' + ((wrap.__baseW[c.key] || 260) / sum).toFixed(4) + 'fr)';
+      });
+    }
+    wrap.style.gridTemplateColumns = tpl.join(' ');
+  }
+  function closeAllFloats() {
+    FLOATS.slice().forEach(function (f) { if (f && f.close) f.close(); });
   }
 
   function openFloat(opts) {
@@ -459,6 +499,7 @@
   w.APP = {
     $: $, $$: $$, esc: esc, txt: txt, ic: ic,
     NAV: NAV, renderTop: renderTop, renderSide: renderSide, toggleRail: toggleRail, openFloat: openFloat,
+    popFill: popFill, closeAllFloats: closeAllFloats,
     toast: toast, toastUndo: toastUndo, openModal: openModal, closeModal: closeModal,
     openDrawer: openDrawer, closeDrawer: closeDrawer,
     confirmDialog: confirmDialog, renderPager: renderPager

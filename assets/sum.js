@@ -15,6 +15,19 @@
   }
   function ic(n, s) { return (w.APP && w.APP.ic) ? w.APP.ic(n, s) : ''; }
 
+  /* ch 文件名称 → 当前申报材料里该 ch 文件的原文（新窗口打开，避免打断 iframe 内的分析） */
+  function chKeyOf(ch) {
+    var m = /ch\s*([0-9]+(?:\.[0-9]+)*)/i.exec(String(ch || ''));
+    return m ? 'ch' + m[1] : String(ch || '').trim();
+  }
+  function chDocUrl(ch) {
+    /* 不在闭包里取 S（渲染时机早于 S 初始化），直接用地址栏里的案卷号 */
+    var m = /[?&]case=([^&]*)/.exec(w.location.search);
+    var no = m ? decodeURIComponent(m[1]) : (w.__HIST_CASE || '');
+    return './09-申报材料解析.html?case=' + encodeURIComponent(no) +
+      '&stage=parse&file=' + encodeURIComponent(chKeyOf(ch));
+  }
+
   /* ---------------- 问题点字典（码值化，跨案卷可统计） ----------------
      ch     写入发补意见草稿时的章节引用
      script 参照话术：可直接落进发补意见的标准表述（统一尺度用）
@@ -211,7 +224,8 @@
       '<div class="conc-h">' +
         '<span class="frac">' + c.n + '/' + c.tot + '</span>' +
         '<span class="ct">' + esc(c.t) + '</span>' +
-        '<span class="tag t-gray">' + esc(c.ch) + '</span>' +
+        '<a class="tag t-gray chlink" href="' + chDocUrl(c.ch) + '" target="_blank" rel="noopener"' +
+          ' title="打开本申报材料中 ' + esc(c.ch) + ' 的原文">' + esc(c.ch) + '</a>' +
         (extra || '') +
         (ad ? '<span class="tag t-green">人工已认可</span>' : '') +
         (ad
@@ -326,7 +340,8 @@
       '<div class="crow-h">' +
         '<span class="frac">' + c.n + '/' + c.tot + '</span>' +
         '<span class="ct" title="' + esc(c.t) + '">' + esc(c.t) + '</span>' +
-        '<span class="tag t-gray">' + esc(c.ch) + '</span>' +
+        '<a class="tag t-gray chlink" href="' + chDocUrl(c.ch) + '" target="_blank" rel="noopener"' +
+          ' title="打开本申报材料中 ' + esc(c.ch) + ' 的原文">' + esc(c.ch) + '</a>' +
         (opts.showCoverage
           ? (c.covered ? '<span class="tag t-green">草稿已覆盖</span>'
                        : '<span class="tag t-amber">草稿未覆盖</span>')

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>申报材料解析 · 发补智能体原型 v18</title>
+<title>申报材料解析 · 发补智能体原型 v22</title>
 <link rel="stylesheet" href="./assets/style.css">
 </head>
 <body class="fit">
@@ -50,7 +50,7 @@
   }
 
   /* ---------------- 案卷上下文 ---------------- */
-  var LS_CASE = 'fb_v18_case';
+  var LS_CASE = 'fb_v21_case';
   var wantNo = qs('case');
   if (!wantNo) { try { wantNo = localStorage.getItem(LS_CASE) || ''; } catch (e) {} }
   var CASE = DATA.CASES.filter(function (c) { return c.acceptNo === wantNo; })[0] ||
@@ -75,6 +75,126 @@
     kw: '', st: '', dir: '', mode: '', err: '', arc: '',
     clsKw: '', clsFilter: 'all', selDir: '', sel: {}
   };
+
+  /* ======================================================================
+     ch 原文预览抽屉：支持 ?file=ch1.1 深链（历史发补分析里点 ch 名称直接跳过来）
+     ====================================================================== */
+  function chKeyOf(ch) {
+    var m = /ch\s*([0-9]+(?:\.[0-9]+)*)/i.exec(String(ch || ''));
+    return m ? 'ch' + m[1] : String(ch || '').trim();
+  }
+  var DOC_TEXT = {
+    'ch1.1': ['产品说明书', [
+      '一次性使用输液器（带针）产品说明书',
+      '【产品名称】一次性使用输液器 带针　　　【型号规格】IS-V1-2.5、IS-V1-3.0 等共 8 个规格',
+      '【预期用途】适用于静脉输液治疗。',
+      '【适用人群】本产品适用于需要静脉输液治疗的患者。',
+      '【使用方法】1）检查包装完整性；2）按无菌操作要求连接输液容器与静脉留置针；3）调节输液流速。',
+      '【注意事项】本品为一次性使用，用后销毁；禁止重复灭菌使用。'
+    ], 0],
+    'ch1.3': ['标签样稿', [
+      '标签样稿（最小销售单元）',
+      '产品名称：一次性使用输液器 带针　　规格型号：IS-V1-2.5',
+      '生产企业：华东医疗器械有限公司　　注册证编号：国械注准 2026xxxxxxx',
+      '生产日期：见包装　　失效日期：见包装　　批号：见包装',
+      '【警示】一次性使用，包装破损禁止使用。'
+    ], 0],
+    'ch3.2': ['非临床资料', [
+      '三、非临床资料',
+      '3.1 产品描述：本产品由输液软管、滴斗、流量调节器、药液过滤器、静脉针等组成。',
+      '3.2 生物相容性：依据 GB/T 16886 系列标准开展了细胞毒性、致敏、刺激等试验，结果符合要求。',
+      '3.3 灭菌验证：采用环氧乙烷灭菌，灭菌确认报告见附件。',
+      '3.4 货架有效期：依据加速老化试验结果，货架有效期暂定 2 年。'
+    ], 0],
+    'ch5.1': ['产品技术要求', [
+      '产品技术要求',
+      '1 产品型号规格及其划分说明',
+      '2 性能指标：2.1 外观；2.2 尺寸；2.3 流速准确性；2.4 泄漏；2.5 连接强度；2.6 微粒污染；2.7 环氧乙烷残留量。',
+      '3 检验方法：应符合 GB 8368—2018 的规定。',
+      '4 术语：无。'
+    ], 0],
+    'ch6.1': ['技术要求', [
+      '第六章 技术要求',
+      '6.1 性能指标',
+      '6.1.1 微粒污染：应符合产品技术要求的规定。',
+      '6.1.2 环氧乙烷残留量：应不大于 10 μg/g。',
+      '6.1.3 针尖锋利度：穿刺力应不大于 0.70 N。'
+    ], 1],
+    'ch6.3': ['稳定性研究', [
+      '第六章 稳定性研究资料',
+      '6.3.1 加速老化条件：温度 55 ℃、相对湿度 75%，老化时间 90 天，等效货架有效期 2 年。',
+      '6.3.2 老化后性能：外观、泄漏、连接强度、微粒污染等指标均符合产品技术要求。',
+      '6.3.3 结论：产品货架有效期可满足 2 年要求。'
+    ], 1]
+  };
+  function docContent(ch) {
+    var k = chKeyOf(ch);
+    return DOC_TEXT[k] || ['申报资料原文', [
+      '（' + (ch || '该章节') + '）',
+      '本节为企业在申报资料中提交的对应内容，系统已按 ch 文件名自动归入 RPS 目录。',
+      '如需查看完整内容，可在本页「PDF 解析」中逐个文件核对抽取结果。'
+    ], 0];
+  }
+  function openDoc(key, fileId) {
+    var f = null;
+    if (fileId) f = findFile(fileId);
+    if (!f) {
+      f = ST.files.filter(function (x) { return x.ch && chKeyOf(x.ch) === chKeyOf(key); })[0] ||
+          ST.files.filter(function (x) { return x.name && x.name.indexOf(key) >= 0; })[0];
+    }
+    var ch = (f && f.ch) || (DOC_TEXT[chKeyOf(key)] ? key : key);
+    var dc = docContent(ch);
+    var title = dc[0], paras = dc[1], hitIdx = dc[2];
+    var name = (f && f.name) || (ch + '.pdf');
+    var page = (f && f.page) || 12;
+
+    closeDoc();
+    var mask = document.createElement('div');
+    mask.className = 'docmask';
+    mask.setAttribute('data-doc-close', '1');
+    var wrap = document.createElement('aside');
+    wrap.className = 'docdrawer';
+    wrap.id = 'docDrawer';
+    wrap.innerHTML =
+      '<div class="docdrawer-hd">' +
+        '<div style="flex:1;min-width:0">' +
+          '<div class="dh-t">' + esc(title) + '</div>' +
+          '<div class="dh-s">' + esc(ch) + ' · ' + esc(CASE.product) + ' · 共 ' + page + ' 页 · ' + esc(name) + '</div>' +
+        '</div>' +
+        '<button class="x" data-doc-close="1" title="关闭">×</button>' +
+      '</div>' +
+      '<div class="docdrawer-bd">' +
+        '<div class="docpage">' +
+          '<div class="docpage-h"><span>第 1 页</span><span>·</span><span>自动归入 RPS 目录：' + esc(ch) + '</span></div>' +
+          paras.map(function (t, i) {
+            var cls = i === hitIdx ? ' class="hit"' : '';
+            return '<p' + cls + '>' + esc(t) + '</p>';
+          }).join('') +
+        '</div>' +
+        '<div class="docpage">' +
+          '<div class="docpage-h"><span>第 2 页</span><span>·</span><span>续</span></div>' +
+          '<p>（以下为后续内容，本原型仅展示前两页示例）</p>' +
+        '</div>' +
+      '</div>' +
+      '<div class="docdrawer-ft">' +
+        '<span>来源：企业申报材料 · ' + esc(name) + '</span><span style="flex:1"></span>' +
+        '<button class="btn xs" data-doc-close="1">关闭</button>' +
+      '</div>';
+    document.body.appendChild(mask);
+    document.body.appendChild(wrap);
+    document.addEventListener('keydown', escDocKey);
+  }
+  function escDocKey(e) { if (e.key === 'Escape') closeDoc(); }
+  function closeDoc() {
+    var d = document.getElementById('docDrawer'); if (d) d.parentNode.removeChild(d);
+    var m = document.querySelector('.docmask'); if (m) m.parentNode.removeChild(m);
+    document.removeEventListener('keydown', escDocKey);
+  }
+
+  /* 抽屉挂在 body 上，关闭要单独监听（#stBody 的点击代理收不到） */
+  document.addEventListener('click', function (e) {
+    if (e.target.closest && e.target.closest('[data-doc-close]')) closeDoc();
+  }, true);
 
   var SKIP_ERR = '前序「目录扫描」失败，该文件未进入解析';
   var PARSE_ERRS = [
@@ -864,9 +984,11 @@
     var op = t.closest('[data-openpdf]');
     if (op) {
       var o = findFile(op.dataset.openpdf);
-      APP.toast('原文预览：' + (o ? o.name : '') + '（演示环境不打开 PDF 阅读器）', 'info', 2400);
+      if (o) openDoc(o.ch || o.name, o.id);
+      else APP.toast('未找到该文件的原文', 'warn', 2000);
       return;
     }
+    if (t.closest('[data-doc-close]')) { closeDoc(); return; }
     var su = t.closest('[data-see-unzip]');
     if (su) { setStage('unzip'); return; }
 
@@ -895,7 +1017,15 @@
   if (!STAGES.some(function (g) { return g.k === ST.stage; })) ST.stage = 'parse';
   renderStage();
 
-  window.__PR = { ST: ST, setStage: setStage, stat: stat, CASE: CASE };
+  /* 深链：?file=ch1.1 → 直接打开该 ch 文件的原文 */
+  var wantFile = qs('file');
+  if (wantFile) {
+    ST.stage = 'parse';
+    renderStage();
+    setTimeout(function () { openDoc(wantFile); }, 80);
+  }
+
+  window.__PR = { ST: ST, setStage: setStage, stat: stat, CASE: CASE, openDoc: openDoc, closeDoc: closeDoc };
 })();
 </script>
 </body>

@@ -1790,6 +1790,10 @@ body.embed .rulebar,body.embed .page-note{display:none}
 .float-ph{border:1.5px dashed #c9d6e6;border-radius:6px;background:#fafcff;min-height:140px;
   display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
   color:var(--t4);font-size:12px;text-align:center;padding:16px}
+/* v22：模块弹出后，原位不再留虚线占位块（它会把剩下的列挤成两行），
+   腾出来的空间由剩余列自适应吃满；浮窗右上角 ✕ 即可收回 */
+.wb > .float-ph,.rulewrap > .float-ph,.rcol > .float-ph,.cmpwrap > .float-ph,
+.wb.popped > .float-ph,.rulewrap.popped > .float-ph,.cmpwrap.popped > .float-ph{display:none}
 .float-ph .btn{background:#fff}
 .in-float{background:#fff!important}
 
@@ -2333,3 +2337,189 @@ body.fit .wb.two-col{min-height:0}
 .fp-bd{overflow:hidden}
 .fp-bd .wbc{height:100%!important;min-height:0}
 .fp-bd .wbc-bd{overflow-y:auto}
+
+/* ==========================================================================
+   v20：操作留痕 / 弹出自适应 / ch 原文跳转 / 原文抽屉
+   ========================================================================== */
+
+/* ---------- 系统操作留痕 ---------- */
+.audit{margin-top:12px;border:1px solid var(--bd);border-radius:10px;background:#fbfcfe;overflow:hidden}
+.audit-h{display:flex;align-items:center;gap:7px;padding:8px 11px;cursor:pointer;
+  background:#f8fafd;border-bottom:1px solid var(--bd2);user-select:none}
+.audit-h:hover{background:#f3f7fd}
+.audit-h b{font-size:12.4px;font-weight:700;color:var(--text)}
+.audit-h .cnt{font-size:10.8px;color:var(--t3);background:#eaeff7;border-radius:9px;padding:0 6px;line-height:16px}
+.audit-h .hint{font-size:10.8px;color:var(--t4)}
+.audit-h .au-chev{font-size:10.8px;color:var(--t3)}
+.audit-h .ic{color:var(--t3);flex:0 0 auto}
+.audit-list{list-style:none;margin:0;padding:6px 11px 8px;max-height:none;overflow:visible}
+/* v22：留痕一行一条 —— 谁 · 时间 · 做了什么，不再分两行显示「原文 → 新文」 */
+.au-row{display:flex;align-items:center;gap:7px;padding:4px 0;border-bottom:1px dashed var(--bd2);min-width:0}
+.au-row:last-child{border-bottom:0}
+.au-av{flex:0 0 18px;width:18px;height:18px;border-radius:50%;background:var(--primary-l);
+  color:var(--primary-d);font-size:10.5px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.au-bd{flex:1;min-width:0;display:flex;align-items:center;gap:7px;font-size:11.8px;white-space:nowrap}
+.au-meta{display:flex;align-items:center;gap:6px;font-size:11.8px;flex:0 0 auto;white-space:nowrap}
+.au-meta b{font-weight:700;color:var(--text)}
+.au-who{flex:0 0 auto;font-weight:700;color:var(--text)}
+.au-act{flex:0 0 auto;color:var(--primary-d);background:var(--primary-l);border-radius:4px;padding:0 5px;
+  font-size:10.8px;line-height:16px;white-space:nowrap}
+.au-tm{flex:0 0 auto;min-width:94px;font-style:normal;font-size:10.8px;color:var(--t4);
+  font-variant-numeric:tabular-nums}
+.au-dt{flex:1;min-width:0;font-size:11.8px;color:var(--t2);line-height:1.5;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.au-row.warn .au-act{color:#b45309;background:#fffbeb}
+.audit-empty{padding:9px 11px;font-size:11.6px;color:var(--t4);line-height:1.6}
+.audit.collapsed .audit-list,.audit.collapsed .audit-empty{display:none}
+.audit.collapsed .audit-h{border-bottom:0}
+
+/* 规则结果里的留痕块稍微内收 */
+.reswrap .audit{margin:4px 0 10px}
+
+/* ---------- 一键弹出后：剩余列自动铺满 ---------- */
+.wb.two-col.popped{grid-template-columns:minmax(0,1fr)}
+.rulewrap.popped{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+
+/* ---------- ch 文件名称 → 原文 ---------- */
+a.chlink.tag{cursor:pointer;text-decoration:none;transition:all .16s ease}
+a.chlink.tag:hover{background:var(--primary-l);border-color:var(--primary-m);color:var(--primary-d);
+  text-decoration:underline}
+a.chlink.tag::after{content:"↗";font-size:9px;margin-left:3px;opacity:.65}
+
+/* ---------- 原文抽屉（09） ---------- */
+.docmask{position:fixed;inset:0;background:rgba(15,23,42,.34);z-index:900;animation:docFade .16s ease}
+.docdrawer{position:fixed;top:0;right:0;bottom:0;width:min(680px,92vw);background:#fff;z-index:901;
+  display:flex;flex-direction:column;box-shadow:-18px 0 48px -18px rgba(15,23,42,.4);animation:docIn .22s ease}
+@keyframes docFade{from{opacity:0}to{opacity:1}}
+@keyframes docIn{from{transform:translateX(24px);opacity:.6}to{transform:none;opacity:1}}
+.docdrawer-hd{flex:0 0 auto;display:flex;align-items:flex-start;gap:10px;padding:14px 16px;
+  border-bottom:1px solid var(--bd)}
+.docdrawer-hd .dh-t{font-size:14px;font-weight:800;color:var(--text);line-height:1.5}
+.docdrawer-hd .dh-s{font-size:11.8px;color:var(--t3);margin-top:3px;line-height:1.6}
+.docdrawer-hd .x{border:0;background:transparent;font-size:18px;line-height:1;color:var(--t3);
+  cursor:pointer;padding:2px 6px;border-radius:8px}
+.docdrawer-hd .x:hover{background:#f1f5f9;color:var(--text)}
+.docdrawer-bd{flex:1;min-height:0;overflow:auto;padding:16px 20px 28px;background:#fdfefe}
+.docpage{background:#fff;border:1px solid var(--bd);border-radius:10px;padding:16px 18px;margin-bottom:14px}
+.docpage-h{font-size:11.5px;color:var(--t4);display:flex;gap:8px;margin-bottom:8px}
+.docpage p{margin:0 0 9px;font-size:13px;line-height:1.95;color:#26303d;text-indent:2em}
+.docpage p.hit{background:#fffbe8;box-shadow:inset 3px 0 0 #f59e0b;border-radius:4px;padding:6px 8px;text-indent:0}
+.docmark{background:#fff1a8;color:#7c2d12;border-radius:3px;padding:0 2px;font-weight:600}
+.docdrawer-ft{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:10px 16px;
+  border-top:1px solid var(--bd);background:#fcfdff;font-size:11.8px;color:var(--t3)}
+
+
+/* ==========================================================================
+   v21：依据从「单条规则」抽成「整卷通用」独立模块，放在规则结果下方
+   v22：规则结果 / 依据 都不再做模块内滚动，内容直接平铺；
+        空间不够时优先保证规则结果（依据让位），整页滚动代替双滚动条
+   ========================================================================== */
+.rulewrap > .rcol{display:flex;flex-direction:column;gap:10px;min-width:0;min-height:0}
+.rcol > #ruleResultCard{flex:0 0 auto;min-height:0}
+.rcol > #ruleBasisCard{flex:0 0 auto;min-height:0;max-height:none}
+.rcol.solo > #ruleBasisCard{flex:0 0 auto;max-height:none}
+
+/* 页面级滚动：两个模块都平铺后总高可能超过一屏，改为整页滚（不再出现卡片内滚动条） */
+body.pg-flow .content{overflow-y:auto;overflow-x:hidden}
+/* 中间列（规则结果 + 依据）高于一屏时：左右两列跟着一起拉高，
+   不要出现「中间很长、两侧一截就断了」的断头感 */
+body.pg-flow .rulewrap{overflow:visible;align-items:stretch;height:auto;flex:0 0 auto;min-height:0}
+body.pg-flow .rulewrap > #ruleListCard,
+body.pg-flow .rulewrap > #rulePdfCard{contain:size layout;min-height:0}
+body.pg-flow #resultBody,body.pg-flow #basisBody,body.pg-flow #basisBody.basis-bd{overflow:visible}
+
+#basisBody.basis-bd{padding:5px 8px 4px;display:flex;flex-direction:column;min-height:0;overflow:visible}
+.basislist,.basislist.collapsed{flex:0 0 auto;min-height:0;max-height:none;overflow:visible}
+/* 展开全部时用两列，7 部法规也只占 4 行，不用滚动 */
+.basislist.grid2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0 8px;align-items:start}
+#basisBody .basisrow{display:flex;align-items:center;gap:8px;padding:5px 9px;border:0;background:transparent;
+  border-radius:8px;text-decoration:none;color:var(--text);font-size:12.4px;line-height:1.45}
+#basisBody .basisrow+.basisrow{margin-top:1px}
+#basisBody .basisrow:hover{background:var(--primary-l);color:var(--primary-d)}
+#basisBody .basisrow .btxt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#basisBody .basisrow .bopen{flex:0 0 auto;font-size:11px;color:var(--t4);opacity:0;transition:opacity .16s}
+#basisBody .basisrow:hover .bopen{opacity:1;color:var(--primary)}
+/* 收起态只留前 3 条（用同等特异度压过 #basisBody .basisrow 的 display:flex） */
+#basisBody .basislist.collapsed .basisrow:nth-of-type(n+4){display:none}
+@media (max-height:860px){
+  #basisBody .basisrow{padding:4px 9px;font-size:12px}
+  .basis-tg{height:22px;font-size:11px}
+  #basisBody.basis-bd{padding:4px 7px 2px}
+  .basislist.grid2{grid-template-columns:minmax(0,1fr)}
+}
+
+.basis-tg{flex:0 0 auto;display:flex;align-items:center;justify-content:center;gap:5px;width:100%;height:27px;
+  margin-top:2px;border:0;border-top:1px dashed var(--bd2);background:transparent;
+  color:var(--t3);font-size:11.6px;cursor:pointer;border-radius:0 0 8px 8px}
+.basis-tg:hover{color:var(--primary);background:#f8fafd}
+.basis-tg .chev{font-size:10px;transition:transform .18s ease}
+.basis-tg .chev.up{transform:rotate(180deg)}
+.basis-empty{padding:16px 10px;text-align:center;color:var(--t4);font-size:12px}
+
+/* ==========================================================================
+   v22：规则结果卡片压缩排版（取消内部滚动的前提：内容高度要收得住）
+        - 采纳 / 不采纳 移到卡片头部，去掉底部操作条
+        - 元信息（复核人、证据段数、规则包…）合并成一行
+        - 留痕改为一行一条
+   ========================================================================== */
+#resultBody{padding:8px 12px 10px}
+#resultBody .reswrap{min-height:0}
+.reshead{align-items:center;row-gap:3px;padding-bottom:6px;margin-bottom:8px}
+.reshead .rname{flex:1;min-width:0}
+.reshead .ract{flex:0 0 auto;display:flex;align-items:center;gap:6px;margin-left:auto}
+.reshead .ract .tag{white-space:nowrap}
+.reshead .tags{width:100%;margin-top:2px;gap:4px}
+.resblock{margin-bottom:6px}
+.resblock .lab{font-size:11.3px;padding-top:2px}
+.resblock .val{font-size:12.4px;line-height:1.66}
+.resblock .val.ai{padding:7px 9px}
+.remark{margin-top:4px;padding-top:5px}
+.remark .rl{margin-bottom:2px;font-size:11.3px}
+.remark textarea{height:38px;font-size:12.2px;line-height:1.55}
+.restip{margin-top:8px;padding-top:7px}
+.resmeta{display:flex;flex-wrap:wrap;gap:3px 14px;font-size:11.2px;line-height:1.7}
+.resmeta .rm-by{color:var(--t3)}
+.resmeta .rm-by b{color:var(--t2);font-weight:600}
+.resmeta .sp{flex:1}
+.reswrap .audit{margin:6px 0 0}
+.reswrap .audit-h{padding:4px 10px}
+.reswrap .audit-list{padding:3px 10px 4px}
+.reswrap .au-row{padding:2px 0}
+
+/* 依据：查看更多 → 页内弹层（不跳页） */
+.lawmodal-list{display:grid;gap:8px}
+.lawmodal-row{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid var(--bd);
+  border-radius:10px;background:#fff;text-decoration:none;color:inherit;transition:all .16s var(--ease)}
+.lawmodal-row:hover{border-color:var(--primary-m);background:#f8fbff}
+.lawmodal-row .lm-n{flex:0 0 20px;height:20px;border-radius:6px;background:var(--primary-l);color:var(--primary-d);
+  font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;margin-top:1px}
+.lawmodal-row .lm-bd{flex:1;min-width:0}
+.lawmodal-row h5{margin:0 0 3px;font-size:12.8px;font-weight:700;color:var(--text);line-height:1.5}
+.lawmodal-row .lm-meta{font-size:11.3px;color:var(--t3);display:flex;gap:12px;flex-wrap:wrap}
+.lawmodal-row .lm-meta b{color:var(--t2);font-weight:600}
+.lawmodal-row .lm-go{flex:0 0 auto;font-size:11.5px;color:var(--primary);align-self:center}
+.lawmodal-hint{font-size:11.6px;color:var(--t3);line-height:1.7;margin-bottom:10px}
+
+/* 弹出后「收回浮窗」入口 */
+.popback{display:none}
+body.has-float .popback{display:inline-flex}
+
+/* 草稿弹出后，问题清单独占整宽：改用自适应多列，避免每张卡片被拉成一条长条 */
+#wb.solo-left #outBody{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));
+  gap:9px;align-content:start}
+#wb.solo-left #outBody .outline-item{margin-bottom:0;height:100%}
+
+/* 规则页整页滚动条（macOS 叠加式滚动条太隐蔽，显式给一条） */
+body.pg-flow .content::-webkit-scrollbar{width:10px}
+body.pg-flow .content::-webkit-scrollbar-track{background:transparent}
+body.pg-flow .content::-webkit-scrollbar-thumb{background:#ccd7e6;border-radius:9px;border:2px solid #f4f7fb;background-clip:content-box}
+body.pg-flow .content::-webkit-scrollbar-thumb:hover{background:#aebdd2;background-clip:content-box}
+
+/* 规则结果被弹出后：依据独享中间列，铺满高度（列表仍是平铺、不滚动） */
+.rcol.solo{min-height:var(--rh)}
+.rcol.solo > #ruleBasisCard{flex:1 1 auto;min-height:0}
+
+/* 依据展开成两列时：法规名称允许折两行，不要被截成「《医疗器械产品技术…」 */
+#basisBody .basislist.grid2 .basisrow{align-items:flex-start;padding:5px 8px}
+#basisBody .basislist.grid2 .basisrow .btxt{white-space:normal;overflow:visible;text-overflow:clip;
+  line-height:1.4;word-break:break-word}

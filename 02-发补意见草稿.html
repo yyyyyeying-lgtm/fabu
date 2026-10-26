@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>发补意见草稿 · 发补智能体原型 v2</title>
+<title>发补意见草稿 · 发补智能体原型 v22</title>
 <link rel="stylesheet" href="./assets/style.css">
 </head>
 <body class="fit">
@@ -18,6 +18,7 @@
         <div class="page-sub">复核后的结论在这里成文，可直接修改；确认无误后一键同步审评系统</div>
       </div>
       <div class="right">
+        <button class="btn popback" id="popBack" title="把所有已弹出的模块收回原位">收回浮窗</button>
         <a class="btn" href="./01-任务列表.html">← 返回任务列表</a>
       </div>
     </div>
@@ -99,6 +100,52 @@
   };
   function deepCopy(o) { return JSON.parse(JSON.stringify(o)); }
 
+  /* ===================== 系统操作留痕 ===================== */
+  var ME = '叶颖';
+  function short2(x, n) { x = String(x || '').replace(/\s+/g, ' ').trim(); return x.length > n ? x.slice(0, n) + '…' : x; }
+  function logP(p, act, detail, tone) {
+    if (!p) return;
+    p.log = p.log || [];
+    p.log.unshift({ who: ME, at: nowStamp(), act: act, detail: detail || '', tone: tone || '' });
+    if (p.log.length > 40) p.log.length = 40;
+  }
+  function auditInner(p) {
+    var list = p.log || [];
+    if (!list.length) return '<div class="audit-empty">暂无操作记录；编辑正文、改 ch 文件名称、增删子项都会在这里留痕。</div>';
+    /* v22：一行一条 —— 谁 · 时间 · 做了什么（不再显示「原文 → 新文」，肉眼更好扫） */
+    return '<ul class="audit-list">' + list.map(function (x) {
+      return '<li class="au-row' + (x.tone ? ' ' + x.tone : '') + '" title="' +
+          esc(x.who + ' · ' + x.at + ' · ' + (x.act || '') + (x.detail ? ' · ' + x.detail : '')) + '">' +
+        '<span class="au-av">' + esc(String(x.who).slice(0, 1)) + '</span>' +
+        '<div class="au-bd">' +
+          '<b class="au-who">' + esc(x.who) + '</b>' +
+          '<em class="au-tm">' + esc(x.at) + '</em>' +
+          '<span class="au-act">' + esc(x.act) + '</span>' +
+          (x.detail ? '<span class="au-dt">' + esc(x.detail) + '</span>' : '') +
+        '</div></li>';
+    }).join('') + '</ul>';
+  }
+  function auditHtml(p) {
+    var n = (p.log || []).length;
+    return '<div class="audit audit-mount' + (n ? '' : ' collapsed') + '" data-audit="' + p.id + '">' +
+      '<div class="audit-h" data-audit-tg="1" title="点击展开 / 收起">' +
+        ic('clock', 12) + '<b>操作留痕</b><span class="cnt">' + n + ' 条</span>' +
+        '<span class="sp"></span><span class="hint">谁 · 什么时间 · 做了什么</span>' +
+        '<span class="au-chev">' + (n ? '收起' : '展开') + '</span>' +
+      '</div>' + auditInner(p) + '</div>';
+  }
+  function refreshAudit(pid) {
+    var p = findP(pid); if (!p) return;
+    var box = document.querySelector('#prob-' + pid + ' .audit-mount');
+    if (!box) return;
+    var n = (p.log || []).length;
+    box.innerHTML = '<div class="audit-h" data-audit-tg="1" title="点击展开 / 收起">' +
+        ic('clock', 12) + '<b>操作留痕</b><span class="cnt">' + n + ' 条</span>' +
+        '<span class="sp"></span><span class="hint">谁 · 什么时间 · 做了什么</span>' +
+        '<span class="au-chev">' + (n ? '收起' : '') + '</span>' +
+      '</div>' + auditInner(p);
+  }
+
   /* ================= ch 文件名称归并工具 ================= */
   function stripOrd(k) { return String(k == null ? '' : k).replace(/^（[^）]*）\s*/, '').trim(); }
   /** 'ch1.1 产品说明书' / 'CH 1.1' / 'ch1.1' → 统一成 'ch1.1' 作为合并键 */
@@ -147,13 +194,17 @@
       var g = key ? pos[key] : null;
       if (!g) {
         g = { key: key || ('__blank_' + p.id), id: p.id, chapter: p.chapter || '',
-              subs: [], order: groups.length, blank: !key };
+              subs: [], order: groups.length, blank: !key, log: (p.log || []).slice() };
         if (key) pos[key] = g;
         groups.push(g);
       } else if (String(p.chapter || '').trim().length > String(g.chapter).trim().length) {
         /* 同一 ch 有多条时，保留描述最完整的那个 ch 名称 */
         g.chapter = p.chapter;
       }
+      /* 同一 ch 的多个来源：留痕合并（按时间倒序去重） */
+      (p.log || []).forEach(function (l) {
+        if (!g.log.some(function (x) { return x.who === l.who && x.at === l.at && x.act === l.act; })) g.log.push(l);
+      });
       p.subs.forEach(function (s) {
         g.subs.push({
           id: s.id, t: s.t, v: s.v,
@@ -189,6 +240,7 @@
       return {
         id: g.id,
         no: '',
+        log: (g.log || []).sort(function (a, b) { return String(b.at).localeCompare(String(a.at)); }),
         src: srcs.length === 1 ? srcs[0] : (srcs.length ? 'mixed' : 'manual'),
         srcs: srcs,
         chapter: g.chapter,
@@ -217,6 +269,7 @@
     ST.analyzed = (c.status !== '待处理');
     ST.draft = ST.analyzed ? deepCopy(DATA.DRAFT.problems) : [];
     normalizeDraft();
+    seedDraftLogs();
     renumber();
     ST.rules = ST.analyzed ? deepCopy(DATA.AI_RULES) : [];
     ST.comps = ST.analyzed ? deepCopy(DATA.AI_COMPARE) : [];
@@ -338,6 +391,24 @@
     else if (k === 'sync') doSync();
   });
 
+  /* 演示用：让留痕一进来就有内容（谁 / 什么时间 / 改了什么） */
+  function seedDraftLogs() {
+    ST.draft.forEach(function (p) {
+      if (p.log && p.log.length) return;
+      var k = chKey(p.chapter);
+      if (k === 'ch1.1') {
+        p.log = [
+          { who: '张明', at: '2026-10-25 15:02', act: '修改意见正文', detail: '改写为 46 字' },
+          { who: '李静', at: '2026-10-25 14:47', act: '同 ch 合并',
+            detail: '把历史发补 PT1 并入本问题，子项按推送时间顺延' }
+        ];
+      } else if (k === 'ch5.1') {
+        p.log = [{ who: '王建华', at: '2026-10-25 11:20', act: '修改 ch 文件名称',
+          detail: '改为 ch5.1 产品技术要求' }];
+      }
+    });
+  }
+
   /* ================= 左栏：问题清单 ================= */
   function renderOutline() {
     var box = $('#outBody');
@@ -438,6 +509,7 @@
           '</div>' +
           p.subs.map(function (x) { return subHtml(p, x); }).join('') +
           '<button class="btn xs" data-addsub="1">＋ 添加子项</button>' +
+          auditHtml(p) +
         '</div></div>';
     });
     h += '</div>';
@@ -597,6 +669,45 @@
       markDirty();
     }
   });
+  /* 编辑留痕：进入时记原值，失焦时若发生变化就写一条 */
+  midBody.addEventListener('focusin', function (e) {
+    var t = e.target;
+    if (!t.hasAttribute) return;
+    if (t.hasAttribute('data-subv') || t.hasAttribute('data-subk')) t.dataset.prev = t.textContent;
+    else if (t.hasAttribute('data-chap')) t.dataset.prev = t.value;
+  });
+  midBody.addEventListener('focusout', function (e) {
+    var t = e.target;
+    if (!t.hasAttribute) return;
+    var probEl = t.closest('.prob'); if (!probEl) return;
+    var p = findP(probEl.dataset.pid); if (!p) return;
+    if (t.hasAttribute('data-subv')) {
+      var prev = t.dataset.prev || '', now = t.textContent;
+      if (prev.replace(/\s+/g, ' ').trim() === now.replace(/\s+/g, ' ').trim()) return;
+      var subEl = t.closest('.sub');
+      var ss = subEl ? findS(p, subEl.dataset.sid) : null;
+      logP(p, '修改意见正文', '改写为 ' + now.replace(/\s+/g, ' ').trim().length + ' 字');
+      if (ss) ss.prev = prev;
+      refreshAudit(p.id);
+    } else if (t.hasAttribute('data-subk')) {
+      var pv = t.dataset.prev || '', nw = t.textContent;
+      if (pv.trim() === nw.trim()) return;
+      logP(p, '修改子项标题', '改为「' + short2(nw, 18) + '」');
+      refreshAudit(p.id);
+    }
+  });
+
+  /* 留痕折叠 */
+  midBody.addEventListener('click', function (e) {
+    var tg = e.target.closest('[data-audit-tg]');
+    if (!tg) return;
+    var box = tg.closest('.audit');
+    if (!box) return;
+    box.classList.toggle('collapsed');
+    var ch = box.querySelector('.au-chev');
+    if (ch) ch.textContent = box.classList.contains('collapsed') ? '展开' : '收起';
+  });
+
   /* ch 文件名称定稿后，按同 ch 重新归并问题清单（与原问题合并 / 子项按时间顺延） */
   midBody.addEventListener('change', function (e) {
     var t = e.target;
@@ -607,6 +718,11 @@
     if (!p) return;
     var before = ST.draft.length;
     var sid0 = (p.subs[0] || {}).id;
+    var oldChap = t.dataset.prev || '';
+    if (oldChap.trim() !== String(t.value).trim()) {
+      logP(p, oldChap ? '修改 ch 文件名称' : '填写 ch 文件名称',
+        oldChap ? ('改为 ' + (t.value || '（空）')) : ('填为 ' + t.value));
+    }
     p.chapter = t.value;
     normalizeDraft();
     var alive = ST.draft.some(function (x) { return x.id === p.id; });
@@ -691,6 +807,7 @@
   function addSub(pid) {
     var p = findP(pid);
     if (!p) return;
+    logP(p, '新增子项', '新增「' + cnOrd(p.subs.length + 1) + '新问题点」');
     p.subs.push({
       id: pid + 's' + Date.now(), t: '新问题点', k: cnOrd(p.subs.length + 1) + '新问题点',
       v: '', src: 'manual', from: '', at: nowStamp()
@@ -721,6 +838,7 @@
       if (!ss) return;
       var at = pp.subs.indexOf(ss);
       pp.subs.splice(at, 1);
+      logP(pp, '删除子项', '删除「' + label + '」', 'warn');
       afterStruct(); markDirty();
       APP.toastUndo('已删除子项「' + label + '」', function () {
         var p3 = findP(pid);
@@ -1450,15 +1568,32 @@
     var w = Math.round(vw * (idx < 2 ? 0.5 : 0.62)) - 12;
     var left = idx === 0 ? 8 : (idx === 1 ? Math.round(vw / 2 + 4) : Math.round((vw - w) / 2));
     POPPED.push(kind);
+    syncPopLayout();
     APP.openFloat({
       el: c.el, title: c.t, sub: (ST.caseNo || '') + ' · ' + ((ST.case && ST.case.product) || ''),
       width: w, height: h, left: left, top: top,
-      onClose: function () { POPPED = POPPED.filter(function (k) { return k !== kind; }); }
+      onClose: function () { POPPED = POPPED.filter(function (k) { return k !== kind; }); syncPopLayout(); }
     });
     APP.toast('已弹出「' + c.t + '」：点问题清单会同步刷新草稿与辅助栏', 'ok', 2600);
   }
   var POPPED = [];
+  /* 模块被搬进浮窗后，剩下的列自动铺满 */
+  function syncPopLayout() {
+    var w = document.getElementById('wb');
+    /* v22：弹出的模块不再原地留虚线占位块；剩下的列按原比例重新分配，把空间吃满 */
+    APP.popFill(w, [
+      { key: 'left', el: document.getElementById('probListCard') },
+      { key: 'mid', el: document.getElementById('draftCard'), flex: true }
+    ], POPPED);
+    if (w) {
+      w.classList.toggle('popped', POPPED.length > 0);
+      /* 只剩问题清单时改成自适应多列，铺满整宽也不显得空 */
+      w.classList.toggle('solo-left', POPPED.length === 1 && POPPED[0] === 'mid');
+    }
+    document.body.classList.toggle('has-float', POPPED.length > 0);
+  }
   document.addEventListener('click', function (e) {
+    if (e.target.closest('#popBack')) { APP.closeAllFloats(); return; }
     var b = e.target.closest('[data-pop]');
     if (!b) return;
     e.preventDefault();

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>比对智能体 · 结果核对 · 发补智能体原型 v18</title>
+<title>比对智能体 · 结果核对 · 发补智能体原型 v22</title>
 <link rel="stylesheet" href="./assets/style.css">
 </head>
 <body class="fit">
@@ -18,6 +18,7 @@
         <div class="page-sub">比对智能体的输出<b>完全可信、无需人工复核</b>；本页用于从发补意见草稿一键回溯差异条目及其原文依据</div>
       </div>
       <div class="right">
+        <button class="btn popback" id="popBack" title="把所有已弹出的模块收回原位">收回浮窗</button>
         <a class="btn" href="./01-任务列表.html">← 返回任务列表</a>
         <a class="btn" href="./08-发补智能体.html?case=CQX2600312&amp;tab=rules" id="btnRules">进入规则校验</a>
         <a class="btn primary" href="./08-发补智能体.html?case=CQX2600312&amp;tab=draft" id="btnDraft">返回发补意见草稿</a>
@@ -305,16 +306,34 @@
     }
   });
 
-  /* ---------------- 一键弹出 / 嵌入 ---------------- */
+  /* ---------------- 一键弹出 / 嵌入 ----------------
+     v22：弹出后另一列自动吃满腾出来的空间（不再留一条空槽） */
+  var POPPED = [];
+  function syncPopLayout() {
+    var w = document.getElementById('cmpwrap');
+    APP.popFill(w, [
+      { key: 'diffs', el: $('#listCard'), flex: true },
+      { key: 'pdf', el: $('#pdfCard') }
+    ], POPPED);
+    document.body.classList.toggle('has-float', POPPED.length > 0);
+  }
   document.addEventListener('click', function (e) {
+    if (e.target.closest('#popBack')) { APP.closeAllFloats(); return; }
     var b = e.target.closest('[data-pop]');
     if (!b) return;
     var kind = b.dataset.pop;
     var map = { diffs: { el: $('#listCard'), t: '差异清单' }, pdf: { el: $('#pdfCard'), t: '企业申报材料 · 原文 PDF' } };
     var c = map[kind];
     if (!c || !c.el) return;
+    if (POPPED.indexOf(kind) >= 0) { APP.toast('「' + c.t + '」已在浮窗中，可直接拖动或点分屏', 'info', 2200); return; }
+    POPPED.push(kind);
+    syncPopLayout();
     APP.openFloat({ el: c.el, title: c.t, sub: CASE.acceptNo + ' · ' + CASE.product,
-      width: kind === 'pdf' ? 640 : 820, height: 660 });
+      width: kind === 'pdf' ? 640 : 820, height: 660,
+      onClose: function () {
+        POPPED = POPPED.filter(function (k) { return k !== kind; });
+        syncPopLayout();
+      } });
   });
 
   function applyEmbed() {

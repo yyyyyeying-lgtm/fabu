@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>法规详情 · 发补智能体原型 v18</title>
+<title>法规详情 · 发补智能体原型 v22</title>
 <link rel="stylesheet" href="./assets/style.css">
 </head>
 <body>
@@ -44,11 +44,15 @@
   var from = qs.get('from');
   var caseNo = qs.get('case') || 'CQX2600312';
 
+  /* v22：知识底座菜单已下线，法规详情只从「规则校验 → 依据」进入，返回规则校验 */
   APP.renderTop({ crumb: ['审评工作台', '发补智能体', '法规详情'] });
   APP.renderSide('rules');
 
-  var back = './05-规则校验.html?case=' + encodeURIComponent(caseNo) + (from ? '&rid=' + encodeURIComponent(from) : '');
-  $('#backLink').href = back;
+  var bl = $('#backLink');
+  if (bl) {
+    bl.href = './05-规则校验.html?case=' + encodeURIComponent(caseNo) +
+      (from ? '&rid=' + encodeURIComponent(from) : '');
+  }
 
   var LAW = (DATA.LAWS || []).filter(function (l) { return l.id === lawId; })[0];
 
@@ -59,7 +63,7 @@
   }
 
   function renderList() {
-    document.title = '法规与指导原则库 · 发补智能体原型 v18';
+    document.title = '法规与指导原则库 · 发补智能体原型 v22';
     $('#pageSub').textContent = '共 ' + DATA.LAWS.length + ' 部法规 / 指导原则 / 标准，点击查看条款原文';
     $('#toc').innerHTML = '<h4>法规目录</h4>' +
       DATA.LAWS.map(function (l) {
